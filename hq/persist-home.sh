@@ -12,30 +12,37 @@ ROOT="$1"; HOME_DIR="${2:-$HOME}"
 [ -n "$ROOT" ] || { echo "usage: dt-persist-home <persist-root> [home]" >&2; exit 2; }
 LAYOUT=1
 mkdir -p "$ROOT"
-# relative-to-home path  →  name under $ROOT.  Editor state, every agent CLI's login, git and ssh config.
+# relative-to-home path : name under $ROOT : kind.  Editor state, every agent CLI's login, git and ssh
+# config. A directory entry always EXISTS on the volume after this runs (a link to a directory that is
+# not there yet breaks every `mkdir -p` through it); a file entry is only linked, and the file appears
+# on the volume the first time something writes it.
 PAIRS="
-.local/share/code-server:code-server
-.config:config
-.claude:claude
-.claude.json:claude.json
-.codex:codex
-.gemini:gemini
-.antigravity:antigravity
-.gitconfig:gitconfig
-.ssh:ssh
+.local/share/code-server:code-server:dir
+.config:config:dir
+.claude:claude:dir
+.claude.json:claude.json:file
+.codex:codex:dir
+.gemini:gemini:dir
+.antigravity:antigravity:dir
+.gitconfig:gitconfig:file
+.ssh:ssh:dir
 "
 for pair in $PAIRS; do
-  rel="${pair%%:*}"; name="${pair##*:}"
+  rel="${pair%%:*}"; rest="${pair#*:}"; name="${rest%%:*}"; kind="${rest##*:}"
   src="$HOME_DIR/$rel"; dst="$ROOT/$name"
   if [ -L "$src" ]; then
     # already a link: only accept ours
-    [ "$(readlink "$src")" = "$dst" ] && continue
+    if [ "$(readlink "$src")" = "$dst" ]; then
+      [ "$kind" = dir ] && mkdir -p "$dst"
+      continue
+    fi
     rm -f "$src"
   fi
   if [ ! -e "$dst" ] && [ -e "$src" ]; then
     mkdir -p "$(dirname "$dst")"; mv "$src" "$dst"
   fi
   if [ -e "$src" ]; then rm -rf "$src"; fi
+  [ "$kind" = dir ] && mkdir -p "$dst"
   mkdir -p "$(dirname "$src")"
   ln -s "$dst" "$src"
 done

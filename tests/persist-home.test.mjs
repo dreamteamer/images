@@ -48,6 +48,24 @@ describe('dt-persist-home', () => {
     assert.ok(!existsSync(path.join(base, 'home2', '.claude', 'stray')));
   });
 
+  test('a home with NONE of the paths (the real image) still gets working directories, not dangling links', () => {
+    const base = mkdtempSync(path.join(tmpdir(), 'persist-'));
+    const home = path.join(base, 'home');
+    const root = path.join(base, 'vol', '.home');
+    mkdirSync(home, { recursive: true });
+    run(root, home);
+    // exactly what the entrypoint does next, and what crashed the first hosted machine
+    execFileSync('mkdir', ['-p', path.join(home, '.local/share/code-server/User')]);
+    writeFileSync(path.join(home, '.local/share/code-server/User/settings.json'), '{}');
+    assert.equal(readFileSync(path.join(root, 'code-server/User/settings.json'), 'utf8'), '{}');
+    for (const dir of ['claude', 'codex', 'gemini', 'config', 'ssh']) assert.ok(lstatSync(path.join(root, dir)).isDirectory(), dir);
+    // file entries are links whose target appears on first write
+    assert.ok(lstatSync(path.join(home, '.gitconfig')).isSymbolicLink());
+    assert.ok(!existsSync(path.join(root, 'gitconfig')));
+    writeFileSync(path.join(home, '.gitconfig'), '[user]\n\tname = x\n');
+    assert.ok(existsSync(path.join(root, 'gitconfig')));
+  });
+
   test('refuses to run without a root', () => {
     assert.throws(() => execFileSync('sh', [SCRIPT], { stdio: 'pipe' }));
   });
