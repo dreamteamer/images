@@ -2,7 +2,9 @@
 # The `hq` template: a dreamteamer workspace with the hq modules (users · contacts · meetings ·
 # projects, plus assets which contacts depends on), code-server as the editor, Claude Code
 # preinstalled as CLI and extension. `dt start container <name> --template hq` runs this; the
-# `dreamteamer.*` labels are what make it a template to `dt list images`.
+# `dreamteamer.*` labels are what make it a template to `dt list images`. Behind the hosted gateway
+# (DT_GATEWAY_PUBLIC_KEY set) the same image puts dt-origin-proxy in front of the editor and persists
+# the durable parts of $HOME onto the workspace volume (DT_PERSIST_HOME).
 #
 # Build:  docker build -t ghcr.io/dreamteamer/hq:<version> -t ghcr.io/dreamteamer/hq:latest hq
 # CI builds and pushes it on a `v*` tag (.github/workflows/images.yml) for amd64 and arm64.
@@ -53,6 +55,8 @@ RUN git init -q && git config user.name dreamteamer && git config user.email dre
  && git add -A && git commit -qm "dreamteamer: hq template" \
  && npm cache clean --force
 COPY --chown=node:node entrypoint.sh /usr/local/bin/dt-entrypoint
+COPY --chown=node:node persist-home.sh /usr/local/bin/dt-persist-home
+COPY --chown=node:node origin-proxy.mjs /usr/local/bin/dt-origin-proxy
 WORKDIR /workspaces
 EXPOSE 8080
 ENTRYPOINT ["dt-entrypoint"]

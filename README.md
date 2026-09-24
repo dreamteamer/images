@@ -58,3 +58,17 @@ Claude Code, code-server and, for `hq-agents`, Codex and Gemini are pinned as `A
 Dockerfile. `hq-agents` is built `FROM ghcr.io/dreamteamer/hq:<the same tag>`.
 
 Apache-2.0.
+
+## Hosted mode (behind the dreamteamer gateway)
+
+The same `hq` image serves the hosted service when two variables are set by the platform:
+
+- `DT_GATEWAY_PUBLIC_KEY` — the gateway's Ed25519 public key (JWK `x`). `dt-origin-proxy` then owns
+  port 8080, code-server listens on loopback 8081, and every request or WebSocket upgrade without a
+  valid `x-dreamteamer-gateway` assertion is refused with 401. `/healthz` stays open. Optional
+  `DT_ORIGIN_HOST` pins the audience the assertion must name (default: the request's Host).
+- `DT_PERSIST_HOME` — a directory on the workspace volume. `dt-persist-home` moves the durable parts of
+  `$HOME` there (editor state, agent CLI logins, git and ssh config) and links them back, so a replaced
+  machine comes up with the same logins and settings.
+
+Neither is set by `dt start container`, so a local container behaves exactly as before.
