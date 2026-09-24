@@ -11,6 +11,15 @@
 # on the workspace volume that the durable parts of $HOME are moved onto. Nothing here reads or writes a
 # credential.
 set -e
+# A freshly attached volume (Fly, or any raw block device) mounts owned by root; a Docker named volume
+# inherits the image's ownership. The image starts as root only to hand the mount points to `node`,
+# then drops privileges for everything else — nothing after this block runs as root.
+if [ "$(id -u)" = "0" ]; then
+  for d in /workspaces /files; do
+    if [ -d "$d" ] && [ "$(stat -c %u "$d")" != "$(id -u node)" ]; then chown node:node "$d"; fi
+  done
+  exec setpriv --reuid=node --regid=node --init-groups env HOME=/home/node USER=node "$0" "$@"
+fi
 WS="${DT_WORKSPACE_DIR:-/workspaces/${DT_WORKSPACE:-hq}}"
 mkdir -p "$WS"
 if [ -n "$DT_PERSIST_HOME" ]; then dt-persist-home "$DT_PERSIST_HOME"; fi

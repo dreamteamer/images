@@ -110,3 +110,13 @@ describe('the entrypoint', () => {
 		assert.ok(e.indexOf('dreamteamer compile') < e.indexOf('exec code-server'));
 	});
 });
+
+test('the entrypoint starts as root only to hand the mount points to node, then drops privileges', () => {
+  const dockerfile = readFileSync(new URL('../hq/Dockerfile', import.meta.url), 'utf8');
+  const entrypoint = readFileSync(new URL('../hq/entrypoint.sh', import.meta.url), 'utf8');
+  assert.match(dockerfile, /USER root\nENTRYPOINT \["dt-entrypoint"\]/);
+  assert.match(entrypoint, /chown node:node "\$d"/);
+  assert.match(entrypoint, /exec setpriv --reuid=node --regid=node --init-groups/);
+  // everything that runs as node comes after the drop
+  assert.ok(entrypoint.indexOf('exec setpriv') < entrypoint.indexOf('mkdir -p "$WS"'));
+});

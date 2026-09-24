@@ -59,4 +59,7 @@ COPY --chown=node:node persist-home.sh /usr/local/bin/dt-persist-home
 COPY --chown=node:node origin-proxy.mjs /usr/local/bin/dt-origin-proxy
 WORKDIR /workspaces
 EXPOSE 8080
+# root only long enough for the entrypoint to chown a freshly attached volume to node; it drops to node
+# with setpriv before anything else runs (the template above was still built as node).
+USER root
 ENTRYPOINT ["dt-entrypoint"]
