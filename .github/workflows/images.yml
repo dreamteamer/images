@@ -1,0 +1,79 @@
+# Builds every template image and pushes it to ghcr.io/dreamteamer on a `v*` tag — the tag is the
+# publish, nothing else triggers it (the same shape as the engine's release). `hq-agents` is built
+# FROM the `hq` of the same tag, so the two are one version.
+#
+# ⚠ The gates come first and fail closed: the tests (nothing personal or secret in any Dockerfile or
+# entrypoint, every version pinned, the labels present) and a grep of the sources about to be
+# published. A red gate publishes nothing.
+name: images
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+  packages: write
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm test
+      - name: leak gate — the sources about to be published
+        run: |
+          set -e
+          if grep -RInE '/Users/|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|io|net|org|co\.il)\b|sk-ant-|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN' hq hq-agents; then echo "::error::a path, address or credential in the image sources"; exit 1; fi
+          if perl -CSD -ne 'exit 1 if /\p{Hebrew}/' $(find hq hq-agents -type f); then :; else echo "::error::Hebrew in image sources"; exit 1; fi
+  hq:
+    needs: gate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: hq
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/dreamteamer/hq:${{ steps.v.outputs.version }}
+            ghcr.io/dreamteamer/hq:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.v.outputs.version }}
+  hq-agents:
+    needs: hq
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: hq-agents
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            HQ_VERSION=${{ needs.hq.outputs.version }}
+          tags: |
+            ghcr.io/dreamteamer/hq-agents:${{ needs.hq.outputs.version }}
+            ghcr.io/dreamteamer/hq-agents:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.hq.outputs.version }}
