@@ -112,8 +112,8 @@ describe('the entrypoint', () => {
 });
 
 test('the entrypoint starts as root only to hand the mount points to node, then drops privileges', () => {
-  const dockerfile = readFileSync(new URL('../hq/Dockerfile', import.meta.url), 'utf8');
-  const entrypoint = readFileSync(new URL('../hq/entrypoint.sh', import.meta.url), 'utf8');
+  const dockerfile = read('hq', 'Dockerfile');
+  const entrypoint = read('hq', 'entrypoint.sh');
   assert.match(dockerfile, /USER root\nENTRYPOINT \["dt-entrypoint"\]/);
   assert.match(entrypoint, /chown node:node "\$d"/);
   assert.match(entrypoint, /exec setpriv --reuid=node --regid=node --init-groups/);
