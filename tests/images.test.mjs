@@ -47,17 +47,18 @@ describe('one version of everything', () => {
 		assert.match(d, /npm install -g[^\n]*dreamteamer@\$\{DT_VERSION\}/);
 		assert.match(d, /npm install[^\n]*dreamteamer@\$\{DT_VERSION\}[^\n]*@dreamteamer\/extensions@\$\{EXT_VERSION\}/, 'the template must pin the same engine as the global install');
 	});
-	test('hq-agents is built FROM the hq of the same version and pins codex and gemini', () => {
+	test('hq-agents is built FROM the hq digest of the same run and pins codex and gemini', () => {
 		const d = read('hq-agents', 'Dockerfile');
-		assert.match(d, /^ARG HQ_VERSION=/m);
-		assert.match(d, /^FROM ghcr\.io\/dreamteamer\/hq:\$\{HQ_VERSION\}$/m);
+		assert.match(d, /^ARG HQ_DIGEST=/m);
+		assert.match(d, /^FROM ghcr\.io\/dreamteamer\/hq@\$\{HQ_DIGEST\}$/m);
 		for (const arg of ['CODEX_VERSION', 'GEMINI_VERSION']) assert.match(d, new RegExp(`^ARG ${arg}=\\d+\\.\\d+\\.\\d+$`, 'm'), arg);
 		assert.doesNotMatch(d, /@latest/);
-		assert.match(d, /USER node\s*$/m, 'hq-agents must hand back to the node user');
+		// 0.4.0: the entrypoint must start as root (egress policy, the proxy's own uid) and drops itself
+		assert.match(d, /USER root\s*\nWORKDIR \/workspaces\s*$/m, 'hq-agents hands back to root, like hq, for the entrypoint to drop');
 	});
-	test('the workflow builds hq-agents with the hq version it just built', () => {
+	test('the workflow builds hq-agents from the hq digest it just pushed', () => {
 		const w = read('.github', 'workflows', 'images.yml');
-		assert.match(w, /HQ_VERSION=\$\{\{ needs\.hq\.outputs\.version \}\}/);
+		assert.match(w, /HQ_DIGEST=\$\{\{ needs\.hq\.outputs\.digest \}\}/);
 		assert.match(w, /needs: gate/);
 		assert.match(w, /npm test/);
 	});
@@ -96,10 +97,11 @@ describe('the entrypoint', () => {
 	const e = read('hq', 'entrypoint.sh');
 	test('opens the workspace dir dt named, clones DT_REPO on first start, else lays the template down', () => {
 		assert.match(e, /WS="\$\{DT_WORKSPACE_DIR:-\/workspaces\/\$\{DT_WORKSPACE:-hq\}\}"/);
-		assert.match(e, /if \[ -n "\$DT_REPO" \]/);
+		assert.match(e, /if \[ -n "\$\{DT_REPO:-\}" \]/); // set -u since 0.4.0
 		assert.match(e, /git clone --quiet "\$DT_REPO"/);
 		assert.match(e, /cp -a \/opt\/dt-template\/\. "\$WS\/"/);
-		assert.match(e, /exec code-server --bind-addr 0\.0\.0\.0:8080 --auth none[\s\S]*?"\$WS"$/m);
+		assert.match(e, /code-server --bind-addr "\$BIND:8080" "\$\{EDITOR_ARGS\[@\]\}" "\$WS"/);
+		assert.match(e, /EDITOR_ARGS=\(--auth none /);
 	});
 	test('answers the git-autofetch prompt by merging defaults into the person\'s settings, never replacing them', () => {
 		assert.match(e, /"git\.autofetch": true/);
@@ -107,16 +109,18 @@ describe('the entrypoint', () => {
 		assert.match(e, /\.local\/share\/code-server\/User\/settings\.json/);
 	});
 	test('compiles before it serves', () => {
-		assert.ok(e.indexOf('dreamteamer compile') < e.indexOf('exec code-server'));
+		assert.ok(e.indexOf('dreamteamer compile') > 0);
+		assert.ok(e.indexOf('dreamteamer compile') < e.indexOf('code-server --bind-addr'));
 	});
 });
 
 test('the entrypoint starts as root only to hand the mount points to node, then drops privileges', () => {
   const dockerfile = read('hq', 'Dockerfile');
   const entrypoint = read('hq', 'entrypoint.sh');
-  assert.match(dockerfile, /USER root\nENTRYPOINT \["dt-entrypoint"\]/);
+  assert.match(dockerfile, /USER root\n(RUN find [^\n]*\n)?ENTRYPOINT \["dt-entrypoint"\]/);
   assert.match(entrypoint, /chown node:node "\$d"/);
-  assert.match(entrypoint, /exec setpriv --reuid=node --regid=node --init-groups/);
-  // everything that runs as node comes after the drop
-  assert.ok(entrypoint.indexOf('exec setpriv') < entrypoint.indexOf('mkdir -p "$WS"'));
+  assert.match(entrypoint, /AS_NODE=\(setpriv --reuid=node --regid=node --init-groups --no-new-privs/);
+  // the workspace is prepared as node (the entrypoint re-enters itself with --prepare after the drop)
+  assert.match(entrypoint, /"\$\{AS_NODE\[@\]\}" \/usr\/local\/bin\/dt-entrypoint --prepare/);
+  assert.ok(entrypoint.indexOf('chown node:node') < entrypoint.indexOf('"${AS_NODE[@]}" /usr/local/bin/dt-entrypoint --prepare'));
 });

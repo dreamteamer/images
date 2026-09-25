@@ -1,0 +1,48 @@
+#!/usr/sbin/nft -f
+# /etc/dt/egress.nft — the in-VM egress policy of a hosted workspace, applied by dt-entrypoint as root
+# before anything runs as the workspace user (DT_MODE=hosted; a failure to apply it stops the machine).
+# Output is accepted by default; what a tenant must not reach is dropped:
+#   · SMTP and the common mining-pool / IRC ports (mining also runs on 443, so this is friction, not
+#     prevention; CPU monitoring is the real control)
+#   · private, CGNAT and link-local IPv4, and Fly's private 6PN network (fdaa::/16) except the resolver
+#     fdaa::3 on port 53 — so no pivot to the machines API (_api.internal:4280) or other 6PN addresses
+#   · new connections above 50/s (burst 100), which blunts scanning
+# Replies to inbound connections (the Fly proxy reaches the origin over 6PN) pass first.
+# The bandwidth cap is a tc tbf qdisc applied beside this file (DT_EGRESS_MBIT, default 20).
+
+table inet dt_egress
+delete table inet dt_egress
+
+table inet dt_egress {
+	set blocked_ports {
+		type inet_service
+		elements = { 25, 465, 587, 3333, 4444, 5555, 6667, 7777, 8333, 9999, 14433, 14444, 45700 }
+	}
+
+	set private_v4 {
+		type ipv4_addr
+		flags interval
+		elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 }
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+
+		oifname "lo" accept
+		ct state established,related accept
+
+		ip6 daddr fdaa::3 udp dport 53 accept
+		ip6 daddr fdaa::3 tcp dport 53 accept
+
+		tcp dport @blocked_ports limit rate 6/minute log prefix "dt-egress-port " level warn
+		tcp dport @blocked_ports counter drop
+
+		ip daddr @private_v4 limit rate 6/minute log prefix "dt-egress-private " level warn
+		ip daddr @private_v4 counter drop
+
+		ip6 daddr fdaa::/16 limit rate 6/minute log prefix "dt-egress-6pn " level warn
+		ip6 daddr fdaa::/16 counter drop
+
+		ct state new limit rate over 50/second burst 100 packets counter drop
+	}
+}

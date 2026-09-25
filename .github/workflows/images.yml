@@ -1,79 +1,169 @@
-# Builds every template image and pushes it to ghcr.io/dreamteamer on a `v*` tag — the tag is the
-# publish, nothing else triggers it (the same shape as the engine's release). `hq-agents` is built
-# FROM the `hq` of the same tag, so the two are one version.
+# Builds every template image. On a pull request: the gates, a local amd64 build, the built-image smoke
+# and the container tests — nothing is pushed. On a `v*` tag (the publish, nothing else triggers it):
+# the same, then Trivy (a fixable CRITICAL blocks), a multi-arch push BY DIGEST, the digest recorded
+# (digest.txt artifact + step summary), an SBOM, and a cosign keyless signature on the digest.
+# `hq-agents` is built FROM the hq digest this run just pushed.
 #
-# ⚠ The gates come first and fail closed: the tests (nothing personal or secret in any Dockerfile or
-# entrypoint, every version pinned, the labels present) and a grep of the sources about to be
-# published. A red gate publishes nothing.
+# ⚠ Production reads a DIGEST, never a tag. `:latest` is no longer pushed: `dt start container` still
+# resolves `--template hq` to :latest, and 0.4.0 binds code-server to loopback unless DT_LOCAL_BIND=0.0.0.0
+# is passed (see README) — :latest moves again once the engine passes it.
+#
+# Every action is pinned by commit SHA (the tag in the trailing comment); every job asks only for the
+# permissions it uses and carries a timeout.
 name: images
 on:
+  pull_request:
   push:
     tags: ['v*']
-permissions:
-  contents: read
-  packages: write
+permissions: {}
 jobs:
   gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: { node-version: 22 }
       - run: npm test
-      - name: leak gate — the sources about to be published
+      - name: hadolint
         run: |
-          set -e
-          if grep -RInE '/Users/|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|io|net|org|co\.il)\b|sk-ant-|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN' hq hq-agents; then echo "::error::a path, address or credential in the image sources"; exit 1; fi
-          if perl -CSD -ne 'exit 1 if /\p{Hebrew}/' $(find hq hq-agents -type f); then :; else echo "::error::Hebrew in image sources"; exit 1; fi
+          for f in hq/Dockerfile hq-agents/Dockerfile; do
+            docker run --rm -i hadolint/hadolint@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d hadolint --failure-threshold error - < "$f"
+          done
+      - name: leak gate — counts only, never prints a match into this public log
+        run: |
+          set -euo pipefail
+          n=$(grep -RIcE '/Users/|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|io|net|org|co\.il)\b|sk-ant-|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN' hq hq-agents | awk -F: '{ s += $NF } END { print s + 0 }')
+          if [ "$n" -gt 0 ]; then echo "::error::$n line(s) in the image sources look like a path, address or credential — not printed; run the same grep locally"; exit 1; fi
+          h=$(find hq hq-agents -type f -print0 | xargs -0 perl -CSD -ne '$n++ if /\p{Hebrew}/; END { print $n + 0 }')
+          if [ "$h" -gt 0 ]; then echo "::error::$h line(s) of Hebrew in the image sources — not printed"; exit 1; fi
+          echo "leak gate: 0 hits"
+
   hq:
     needs: gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write     # push to ghcr (tags only)
+      id-token: write     # cosign keyless (tags only)
     outputs:
-      version: ${{ steps.v.outputs.version }}
+      digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
-      - id: v
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: 22 }
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build amd64 for the gates (loaded locally, not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with: { context: hq, platforms: linux/amd64, load: true, tags: "hq:candidate" }
+      - name: smoke the built image (hosted mode, CAP_NET_ADMIN as on Fly)
+        run: timeout 600 tests/smoke.sh hq:candidate
+      - name: container tests against the built image
+        run: HQ_IMAGE=hq:candidate timeout 900 node --test tests/container.test.mjs
+      - name: trivy — a fixable CRITICAL blocks the publish
+        if: github.ref_type == 'tag'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: hq:candidate
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+      - if: github.ref_type == 'tag'
+        id: v
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - if: github.ref_type == 'tag'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - if: github.ref_type == 'tag'
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: hq
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/dreamteamer/hq:${{ steps.v.outputs.version }}
-            ghcr.io/dreamteamer/hq:latest
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/dreamteamer/hq:${{ steps.v.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.v.outputs.version }}
+      - name: record the digest
+        if: github.ref_type == 'tag'
+        env: { DIGEST: "${{ steps.push.outputs.digest }}" }
+        run: |
+          echo "ghcr.io/dreamteamer/hq@${DIGEST}" > digest.txt
+          echo "IMAGE_REF=ghcr.io/dreamteamer/hq@${DIGEST}"
+          echo "IMAGE_REF=\`ghcr.io/dreamteamer/hq@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+      - if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: hq-digest, path: digest.txt }
+      - name: SBOM of the pushed digest
+        if: github.ref_type == 'tag'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ghcr.io/dreamteamer/hq@${{ steps.push.outputs.digest }}
+          format: spdx-json
+          artifact-name: hq.spdx.json
+          upload-release-assets: false
+      - if: github.ref_type == 'tag'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: sign the digest (keyless, GitHub OIDC)
+        if: github.ref_type == 'tag'
+        run: cosign sign --yes "ghcr.io/dreamteamer/hq@${{ steps.push.outputs.digest }}"
+
   hq-agents:
     needs: hq
-    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: hq-agents
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: mode=max
+          sbom: true
           build-args: |
-            HQ_VERSION=${{ needs.hq.outputs.version }}
-          tags: |
-            ghcr.io/dreamteamer/hq-agents:${{ needs.hq.outputs.version }}
-            ghcr.io/dreamteamer/hq-agents:latest
+            HQ_DIGEST=${{ needs.hq.outputs.digest }}
+          tags: ghcr.io/dreamteamer/hq-agents:${{ steps.v.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ needs.hq.outputs.version }}
+            org.opencontainers.image.version=${{ steps.v.outputs.version }}
+      - name: record the digest
+        env: { DIGEST: "${{ steps.push.outputs.digest }}" }
+        run: |
+          echo "ghcr.io/dreamteamer/hq-agents@${DIGEST}" > digest.txt
+          echo "IMAGE_REF=ghcr.io/dreamteamer/hq-agents@${DIGEST}"
+          echo "hq-agents: \`ghcr.io/dreamteamer/hq-agents@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: hq-agents-digest, path: digest.txt }
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: sign the digest (keyless, GitHub OIDC)
+        run: cosign sign --yes "ghcr.io/dreamteamer/hq-agents@${{ steps.push.outputs.digest }}"
