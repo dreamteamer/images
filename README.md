@@ -21,6 +21,7 @@ dt open container hq-dana --vscode                # attach the host's VS Code (D
 An image carrying three labels — `dreamteamer.template`, `dreamteamer.ports`, `dreamteamer.modules` —
 and a `devcontainer.metadata` label naming the extensions the host's VS Code installs on attach. `dt
 list images` shows the templates present; `--template hq` resolves to `ghcr.io/dreamteamer/hq:latest`
+(which CI no longer moves since 0.4.0, see Local mode)
 (`DT_REGISTRY` and `DT_TEMPLATE_TAG` in `~/.dreamteamer/.env`), or to `DT_IMAGE_hq=<ref>` when pinned.
 
 ## where things live in a container
@@ -59,16 +60,46 @@ Dockerfile. `hq-agents` is built `FROM ghcr.io/dreamteamer/hq:<the same tag>`.
 
 Apache-2.0.
 
+## Local mode (the default)
+
+With `DT_MODE` unset (or `local`), code-server serves port 8080 with no auth of its own, bound to
+`127.0.0.1` inside the container. A Docker port mapping needs it on `0.0.0.0`, so a local run passes
+the flag explicitly — the host side of the mapping stays on loopback:
+
+```bash
+docker run -d -p 127.0.0.1:8100:8080 -e DT_LOCAL_BIND=0.0.0.0 -e DT_WORKSPACE=hq-dana ghcr.io/dreamteamer/hq:0.4.0
+```
+
+⚠ `dt start container` does not pass `DT_LOCAL_BIND` yet, so it keeps resolving `:latest`, which CI
+no longer moves; `:latest` follows again once the engine sends the flag.
+
 ## Hosted mode (behind the dreamteamer gateway)
 
-The same `hq` image serves the hosted service when two variables are set by the platform:
+The same `hq` image serves the hosted service when the platform sets:
 
-- `DT_GATEWAY_PUBLIC_KEY` — the gateway's Ed25519 public key (JWK `x`). `dt-origin-proxy` then owns
-  port 8080, code-server listens on loopback 8081, and every request or WebSocket upgrade without a
-  valid `x-dreamteamer-gateway` assertion is refused with 401. `/healthz` stays open. Optional
-  `DT_ORIGIN_HOST` pins the audience the assertion must name (default: the request's Host).
+- `DT_MODE=hosted` — required; nothing public listens without it.
+- `DT_GATEWAY_PUBLIC_KEY` — the gateway's Ed25519 public key (JWK `x`), and/or
+  `DT_GATEWAY_PUBLIC_KEYS`, a JSON array of them for rotation (an assertion from any key verifies).
+  Without a key that imports the container exits non-zero within a second and never listens.
+- `DT_ORIGIN_HOST` — required; the audience every assertion must name.
 - `DT_PERSIST_HOME` — a directory on the workspace volume. `dt-persist-home` moves the durable parts of
   `$HOME` there (editor state, agent CLI logins, git and ssh config) and links them back, so a replaced
   machine comes up with the same logins and settings.
+- `DT_EGRESS_MBIT` — egress bandwidth cap, default 20. `DT_EGRESS_POLICY=off` skips the egress policy,
+  with a loud log line; debugging only.
 
-Neither is set by `dt start container`, so a local container behaves exactly as before.
+What runs, and as whom:
+
+| process | user | notes |
+|---|---|---|
+| `dt-entrypoint` (PID 1) | root | applies the egress policy, chowns the two mount points, supervises; the workspace user cannot signal it |
+| `dt-origin-proxy` on `:8080` | `dtproxy` | `node --disable-sigusr1`, clean env, no new privileges, no capabilities; refuses every request or WebSocket upgrade without a valid `x-dreamteamer-gateway` assertion (401); `/healthz` is 200 only while code-server answers |
+| code-server on `127.0.0.1:8081` | `node` | no new privileges, no capabilities; every terminal inherits that |
+
+The egress policy (`/etc/dt/egress.nft`, plus a `tc tbf` cap) needs `CAP_NET_ADMIN` in the root phase;
+without it a hosted container exits non-zero. A Fly Machine's init runs the entrypoint as root inside
+the microVM. If either child exits, the supervisor stops the other and exits non-zero so the platform
+restarts the machine.
+
+Test a built image with `npm run test:image` (`HQ_IMAGE=<ref>`, default `hq:sec`): the container tests and
+`tests/smoke.sh`, which CI runs on every pull request and tag.

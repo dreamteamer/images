@@ -178,3 +178,9 @@ describe('CI: pinned, least privilege, gated, recorded, signed', () => {
 	});
 });
 
+describe('0.4.0', () => {
+	test('package.json and the CHANGELOG agree on the version', () => {
+		assert.equal(JSON.parse(read('package.json')).version, '0.4.0');
+		assert.match(read('CHANGELOG.md'), /^## 0\.4\.0/m);
+	});
+});
