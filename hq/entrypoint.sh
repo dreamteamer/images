@@ -15,7 +15,8 @@
 #                    the loud debugging opt-out); then code-server listens on 127.0.0.1:8081 and
 #                    dt-origin-proxy owns 8080, as its own user `dtproxy`, refusing every request without
 #                    a gateway assertion. DT_PERSIST_HOME names a directory on the workspace volume that the
-#                    durable parts of $HOME are moved onto.
+#                    durable parts of $HOME are moved onto, and FILES_FOLDER is /workspaces/files (on the
+#                    volume; dt-files-folder migrates a workspace that still points at /files).
 #
 # Privilege: the image starts as root. This script stays root as a small supervisor (PID 1), so the
 # workspace user can signal neither it nor the proxy; everything else runs with setpriv, no new
@@ -50,7 +51,8 @@ prepare() {
   fi
   if [ -n "${GIT_AUTHOR_NAME:-}" ]; then git config user.name "$GIT_AUTHOR_NAME"; fi
   if [ -n "${GIT_AUTHOR_EMAIL:-}" ]; then git config user.email "$GIT_AUTHOR_EMAIL"; fi
-  if [ ! -f .env ]; then printf 'FILES_FOLDER=%s\n' "${FILES_FOLDER:-/files}" > .env; fi
+  # FILES_FOLDER: /files locally; on the volume (/workspaces/files) when hosted — see dt-files-folder
+  dt-files-folder "$WS" "${DT_MODE:-local}" /files /workspaces/files
   # Editor settings the person should never be asked about — git.autofetch answers "periodically run
   # git fetch?" once — merged into the settings file in the home volume, adding only keys it lacks.
   SETTINGS=/home/node/.local/share/code-server/User/settings.json
@@ -96,6 +98,8 @@ if [ "$MODE" = hosted ]; then
   # fail closed, fast: no key that imports, or no audience, and nothing listens
   /usr/local/bin/node /usr/local/bin/dt-origin-proxy --check || die "hosted mode needs DT_GATEWAY_PUBLIC_KEY (or DT_GATEWAY_PUBLIC_KEYS) and DT_ORIGIN_HOST — refusing to start the public listener"
   id dtproxy >/dev/null 2>&1 || die "the dtproxy user is missing from the image"
+  # the files the records point at live on the persistent volume, not in the image's /files
+  export FILES_FOLDER=/workspaces/files
   PROXY_ENV=(DT_PROXY_PORT=8080 DT_EDITOR_PORT=8081 "DT_ORIGIN_HOST=$DT_ORIGIN_HOST")
   [ -z "${DT_GATEWAY_PUBLIC_KEY:-}" ] || PROXY_ENV+=("DT_GATEWAY_PUBLIC_KEY=$DT_GATEWAY_PUBLIC_KEY")
   [ -z "${DT_GATEWAY_PUBLIC_KEYS:-}" ] || PROXY_ENV+=("DT_GATEWAY_PUBLIC_KEYS=$DT_GATEWAY_PUBLIC_KEYS")

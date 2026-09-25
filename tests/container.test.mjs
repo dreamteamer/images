@@ -188,6 +188,45 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 		});
 	});
 
+	test('hosted FILES_FOLDER is on the volume; a workspace that was local on /files is migrated once, idempotently', async () => {
+		const tag = `${process.pid}`;
+		const vols = [`dt-ct-ws-${tag}`, `dt-ct-files-${tag}`];
+		const mounts = ['-v', `${vols[0]}:/workspaces`, '-v', `${vols[1]}:/files`];
+		try {
+			// 1. a local start on those volumes: .env says /files, and a file lands in /files
+			const local = `dt-ct-mig-local-${tag}`;
+			await run(local, [...mounts, '-e', 'DT_WORKSPACE=hq']);
+			await waitHealthy(local);
+			assert.equal((await execIn(local, 'cat /workspaces/hq/.env')).out, 'FILES_FOLDER=/files\n');
+			await execIn(local, 'mkdir -p /files/meetings && echo A > /files/meetings/a.txt', 'node');
+			await docker(['rm', '-f', local]);
+			// 2. the same volumes, hosted: value rewritten, content moved, dir owned by node, code-server sees it
+			const hosted = `dt-ct-mig-hosted-${tag}`;
+			await run(hosted, ['--cap-add', 'NET_ADMIN', ...mounts, ...hostedEnv, '-e', 'DT_WORKSPACE=hq'] /* the later -e wins */);
+			await waitHealthy(hosted);
+			assert.equal((await execIn(hosted, 'cat /workspaces/hq/.env')).out, 'FILES_FOLDER=/workspaces/files\n');
+			assert.equal((await execIn(hosted, 'cat /workspaces/files/meetings/a.txt')).out, 'A\n');
+			assert.equal((await execIn(hosted, 'ls -A /files')).out, '');
+			assert.equal((await execIn(hosted, 'stat -c %U /workspaces/files')).out.trim(), 'node');
+			const env = await execIn(hosted, 'tr "\\0" "\\n" < /proc/$(pgrep -u node -o -f "^/usr/lib/code-server/lib/node")/environ | grep ^FILES_FOLDER=', 'node');
+			assert.equal(env.out.trim(), 'FILES_FOLDER=/workspaces/files');
+			const logs = await docker(['logs', hosted]);
+			assert.match(logs.out + logs.err, /rewritten from \/files to \/workspaces\/files/);
+			assert.match(logs.out + logs.err, /moved 1 entry from \/files to \/workspaces\/files/);
+			// 3. restart: nothing to do, nothing logged, content intact
+			await docker(['restart', '-t', '5', hosted], { timeout: 60_000 });
+			await waitHealthy(hosted);
+			assert.equal((await execIn(hosted, 'cat /workspaces/files/meetings/a.txt')).out, 'A\n');
+			assert.equal((await execIn(hosted, 'cat /workspaces/hq/.env')).out, 'FILES_FOLDER=/workspaces/files\n');
+			const all = await docker(['logs', hosted]); // both starts
+			assert.equal((all.out + all.err).match(/moved \d+ entr/g).length, 1, 'the second start moved nothing');
+			assert.equal((all.out + all.err).match(/rewritten from/g).length, 1, 'the second start rewrote nothing');
+			await docker(['rm', '-f', hosted]);
+		} finally {
+			for (const v of vols) await docker(['volume', 'rm', '-f', v]);
+		}
+	});
+
 	test('DT_EGRESS_POLICY=off starts hosted without NET_ADMIN, and says so loudly', async () => {
 		const name = `dt-ct-noegress-${process.pid}`;
 		await run(name, [...hostedEnv, '-e', 'DT_EGRESS_POLICY=off']);

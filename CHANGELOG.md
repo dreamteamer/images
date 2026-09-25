@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 — 2026-09-25
+
+- **Hosted `FILES_FOLDER` is on the persistent volume** (Codex second review #4). With `DT_MODE=hosted`
+  it is `/workspaces/files`: created and owned by `node`, written into a fresh workspace `.env`, and
+  exported to code-server. An existing `.env` that still says `/files` gets that one value rewritten,
+  and whatever is in `/files` is moved over once. A name that already exists on the volume is never
+  overwritten; it stays put and is logged. Re-running changes nothing (`dt-files-folder`). Local mode
+  is unchanged.
+
 ## 0.4.0 — 2026-09-25 — hardening
 
 Security fixes from the 2026-09-25 review of the hosted service (findings IMG-1…IMG-7, S8-01/S8-02).

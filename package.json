@@ -1,6 +1,6 @@
 {
 	"name": "@dreamteamer/images",
-	"version": "0.4.0",
+	"version": "0.4.1",
 	"private": true,
 	"description": "The template images `dt start container <name> --template <t>` runs — public, built by CI on a v* tag, pushed to ghcr.io/dreamteamer.",
 	"license": "Apache-2.0",

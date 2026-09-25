@@ -30,12 +30,17 @@ describe('nothing personal, nothing secret — in any template', () => {
 			assert.doesNotMatch(text, /\p{Script=Hebrew}/u, 'Hebrew');
 		});
 	}
-	test('the entrypoint writes one .env line (FILES_FOLDER) and never a token or password', () => {
+	test('the workspace .env is written only by dt-files-folder, only ever with FILES_FOLDER, never a token or password', () => {
 		const e = read('hq', 'entrypoint.sh');
-		const writes = e.split('\n').filter((l) => /\.env\b/.test(l) && !/^\s*#/.test(l));
-		assert.equal(writes.length, 1, writes.join('\n'));
-		assert.match(writes[0], /FILES_FOLDER/);
-		assert.doesNotMatch(e, /TOKEN|PASSWORD|SECRET/i);
+		assert.equal(e.split('\n').filter((l) => /\.env\b/.test(l) && !/^\s*#/.test(l)).length, 0, 'the entrypoint itself no longer touches .env');
+		assert.match(e, /dt-files-folder "\$WS" "\$\{DT_MODE:-local\}" \/files \/workspaces\/files/);
+		const f = read('hq', 'files-folder.sh');
+		// every line that produces .env content: the two printf writes and the awk rewrite (the awk passes other lines through untouched)
+		const writes = f.split('\n').filter((l) => /printf [^\n]*> "\$ENVFILE"|print "/.test(l) && !/^\s*#/.test(l));
+		assert.equal(writes.length, 3, writes.join('\n'));
+		assert.ok(writes.length >= 1);
+		for (const w of writes) assert.match(w, /FILES_FOLDER=/, w);
+		for (const t of [e, f]) assert.doesNotMatch(t, /TOKEN|PASSWORD|SECRET/i);
 	});
 });
 

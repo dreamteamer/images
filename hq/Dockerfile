@@ -78,6 +78,7 @@ RUN git init -q && git config user.name dreamteamer && git config user.email dre
 # Root-owned and read-only to everyone else: the workspace user cannot rewrite the auth boundary.
 COPY --chown=root:root --chmod=0755 entrypoint.sh /usr/local/bin/dt-entrypoint
 COPY --chown=root:root --chmod=0755 persist-home.sh /usr/local/bin/dt-persist-home
+COPY --chown=root:root --chmod=0755 files-folder.sh /usr/local/bin/dt-files-folder
 COPY --chown=root:root --chmod=0755 origin-proxy.mjs /usr/local/bin/dt-origin-proxy
 COPY --chown=root:root --chmod=0644 egress.nft /etc/dt/egress.nft
 WORKDIR /workspaces
