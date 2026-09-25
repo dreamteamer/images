@@ -36,7 +36,7 @@ jobs:
       - name: leak gate — counts only, never prints a match into this public log
         run: |
           set -euo pipefail
-          n=$(grep -RIcE '/Users/|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|io|net|org|co\.il)\b|sk-ant-|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN' hq hq-agents | awk -F: '{ s += $NF } END { print s + 0 }')
+          n=$( (grep -RIcE '/Users/|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|io|net|org|co\.il)\b|sk-ant-|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN' hq hq-agents || true) | awk -F: '{ s += $NF } END { print s + 0 }')
           if [ "$n" -gt 0 ]; then echo "::error::$n line(s) in the image sources look like a path, address or credential — not printed; run the same grep locally"; exit 1; fi
           h=$(find hq hq-agents -type f -print0 | xargs -0 perl -CSD -ne '$n++ if /\p{Hebrew}/; END { print $n + 0 }')
           if [ "$h" -gt 0 ]; then echo "::error::$h line(s) of Hebrew in the image sources — not printed"; exit 1; fi
