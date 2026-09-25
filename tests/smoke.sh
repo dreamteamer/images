@@ -41,8 +41,10 @@ timeout 30 docker exec "$NAME" sh -c 'ps -eo user=,args= | grep "[c]ode-server" 
 nnp=$(as_node 'grep NoNewPrivs /proc/$(pgrep -u node -o -f "^/usr/lib/code-server/lib/node")/status' | awk '{print $2}')
 [ "$nnp" = 1 ] || fail "code-server does not run with NoNewPrivs"
 ok "code-server runs as node with NoNewPrivs: 1"
-timeout 30 docker exec "$NAME" nft list ruleset | grep -q 'tcp dport @blocked_ports' || fail "the egress policy is not applied"
-timeout 30 docker exec "$NAME" nft list ruleset | grep -q 'ip6 daddr fdaa::/16' || fail "the 6PN drop is not applied"
+# Read the ruleset once: `nft … | grep -q` under pipefail fails when grep exits early and nft gets SIGPIPE.
+ruleset=$(timeout 30 docker exec "$NAME" nft list ruleset)
+grep -q 'tcp dport @blocked_ports' <<<"$ruleset" || fail "the egress policy is not applied"
+grep -q 'ip6 daddr fdaa::/16' <<<"$ruleset" || fail "the 6PN drop is not applied"
 ok "egress policy live (SMTP/mining ports, private ranges, 6PN)"
 [ "$(timeout 30 docker exec "$NAME" cat /workspaces/smoke/.env)" = "FILES_FOLDER=/workspaces/files" ] || fail "hosted FILES_FOLDER is not on the volume"
 [ "$(timeout 30 docker exec "$NAME" stat -c %U /workspaces/files)" = node ] || fail "/workspaces/files is not owned by node"
