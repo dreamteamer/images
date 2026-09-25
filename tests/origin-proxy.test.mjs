@@ -7,7 +7,7 @@ import net from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { verifyAssertion, loadPublicKey } from '../hq/origin-proxy.mjs';
+import { verifyAssertion, loadPublicKey, loadPublicKeys } from '../hq/origin-proxy.mjs';
 
 const PROXY = fileURLToPath(new URL('../hq/origin-proxy.mjs', import.meta.url));
 const b64url = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
@@ -97,11 +97,16 @@ describe('verifyAssertion (pure)', () => {
 });
 
 describe('the proxy in front of the editor', () => {
-  test('/healthz is open and never reaches the editor', async () => {
+  test('/healthz is open, and reaches the editor only as its own /healthz probe, with no caller headers', async () => {
     const before = seen.length;
-    const r = await request(proxyPort, '/healthz');
+    const r = await request(proxyPort, '/healthz', { 'x-probe-marker': 'caller' });
     assert.equal(r.status, 200);
-    assert.equal(seen.length, before);
+    const probes = seen.slice(before);
+    assert.ok(probes.length <= 1);
+    for (const p of probes) {
+      assert.equal(p.url, '/healthz');
+      assert.equal(p.headers['x-probe-marker'], undefined, 'the caller\'s headers are never forwarded by the health probe');
+    }
   });
   test('no assertion → 401, nothing forwarded', async () => {
     const before = seen.length;
@@ -138,5 +143,116 @@ describe('the proxy in front of the editor', () => {
     assert.match(tunnelled, /^HTTP\/1\.1 101/);
     assert.match(tunnelled, /echo:ping/);
     assert.equal(seen.at(-1).headers['x-dreamteamer-gateway'], undefined);
+  });
+});
+
+// ---- 0.4.0: key sets, a health check that means something, and a fail-closed start ----
+
+async function startProxy(env) {
+  const probe = net.createServer();
+  const port = await listen(probe);
+  await new Promise((r) => probe.close(r));
+  const child = spawn(process.execPath, [PROXY], {
+    env: { ...process.env, DT_GATEWAY_PUBLIC_KEY: '', DT_GATEWAY_PUBLIC_KEYS: '', DT_PROXY_PORT: String(port), DT_ORIGIN_HOST: 'origin.test', ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('proxy did not start')), 8000);
+    child.stdout.on('data', (d) => { if (String(d).includes('assertions required')) { clearTimeout(t); resolve(); } });
+    child.on('exit', (c) => { clearTimeout(t); reject(new Error(`proxy exited ${c}`)); });
+  });
+  return { child, port };
+}
+
+function runCheck(env) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [PROXY, '--check'], {
+      env: { ...process.env, DT_GATEWAY_PUBLIC_KEY: '', DT_GATEWAY_PUBLIC_KEYS: '', DT_ORIGIN_HOST: '', ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const t = setTimeout(() => child.kill('SIGKILL'), 5000);
+    child.on('exit', (code) => { clearTimeout(t); resolve({ code, out }); });
+  });
+}
+
+describe('a set of gateway keys (rotation)', () => {
+  const second = generateKeyPairSync('ed25519');
+  const secondX = second.publicKey.export({ format: 'jwk' }).x;
+  test('loadPublicKeys reads DT_GATEWAY_PUBLIC_KEYS (a JSON array) and DT_GATEWAY_PUBLIC_KEY together', () => {
+    assert.equal(loadPublicKeys({ DT_GATEWAY_PUBLIC_KEYS: JSON.stringify([publicX, secondX]) }).length, 2);
+    assert.equal(loadPublicKeys({ DT_GATEWAY_PUBLIC_KEY: publicX }).length, 1);
+    assert.equal(loadPublicKeys({ DT_GATEWAY_PUBLIC_KEY: publicX, DT_GATEWAY_PUBLIC_KEYS: JSON.stringify([secondX]) }).length, 2);
+  });
+  test('loadPublicKeys refuses no key, a non-array, a non-string member and a key that does not import', () => {
+    assert.throws(() => loadPublicKeys({}), /required/);
+    assert.throws(() => loadPublicKeys({ DT_GATEWAY_PUBLIC_KEYS: '[]' }), /required/);
+    assert.throws(() => loadPublicKeys({ DT_GATEWAY_PUBLIC_KEYS: '"abc"' }), /JSON array/);
+    assert.throws(() => loadPublicKeys({ DT_GATEWAY_PUBLIC_KEYS: '[1]' }), /JSON array/);
+    assert.throws(() => loadPublicKeys({ DT_GATEWAY_PUBLIC_KEYS: 'not json' }), /JSON array/);
+    assert.throws(() => loadPublicKeys({ DT_GATEWAY_PUBLIC_KEY: 'AAAA' }));
+  });
+  test('an assertion signed by ANY key in the set verifies; a key outside it does not', () => {
+    const keys = loadPublicKeys({ DT_GATEWAY_PUBLIC_KEYS: JSON.stringify([publicX, secondX]) });
+    assert.ok(verifyAssertion(keys, mint(good('origin.test')), { audience: 'origin.test' }));
+    assert.ok(verifyAssertion(keys, mint(good('origin.test'), second.privateKey), { audience: 'origin.test' }));
+    assert.throws(() => verifyAssertion(keys, mint(good('origin.test'), otherPrivate), { audience: 'origin.test' }), /bad signature/);
+  });
+  test('the running proxy accepts the second key of a DT_GATEWAY_PUBLIC_KEYS set', async () => {
+    const { child, port } = await startProxy({ DT_GATEWAY_PUBLIC_KEYS: JSON.stringify([publicX, secondX]), DT_EDITOR_PORT: String(editorPort) });
+    try {
+      const r = await request(port, '/', { 'x-dreamteamer-gateway': mint(good('origin.test'), second.privateKey) });
+      assert.equal(r.status, 200);
+      assert.equal((await request(port, '/', { 'x-dreamteamer-gateway': mint(good('origin.test'), otherPrivate) })).status, 401);
+    } finally { child.kill(); }
+  });
+});
+
+describe('--check: the entrypoint\'s fail-closed gate', () => {
+  test('passes with a key that imports and an audience', async () => {
+    const r = await runCheck({ DT_GATEWAY_PUBLIC_KEY: publicX, DT_ORIGIN_HOST: 'origin.test' });
+    assert.equal(r.code, 0, r.out);
+  });
+  test('fails, saying why, with no key, a junk key, or no DT_ORIGIN_HOST', async () => {
+    const none = await runCheck({ DT_ORIGIN_HOST: 'origin.test' });
+    assert.notEqual(none.code, 0); assert.match(none.out, /DT_GATEWAY_PUBLIC_KEY/);
+    const junk = await runCheck({ DT_GATEWAY_PUBLIC_KEY: 'AAAA', DT_ORIGIN_HOST: 'origin.test' });
+    assert.notEqual(junk.code, 0);
+    const noAud = await runCheck({ DT_GATEWAY_PUBLIC_KEY: publicX });
+    assert.notEqual(noAud.code, 0); assert.match(noAud.out, /DT_ORIGIN_HOST/);
+  });
+  test('the proxy itself refuses to listen without DT_ORIGIN_HOST', async () => {
+    await assert.rejects(startProxy({ DT_GATEWAY_PUBLIC_KEY: publicX, DT_ORIGIN_HOST: '', DT_EDITOR_PORT: String(editorPort) }), /exited/);
+  });
+});
+
+describe('/healthz tells the truth about the editor (IMG-6)', () => {
+  test('503 when nothing listens on the editor port', async () => {
+    const closed = net.createServer();
+    const deadPort = await listen(closed);
+    await new Promise((r) => closed.close(r));
+    const { child, port } = await startProxy({ DT_GATEWAY_PUBLIC_KEY: publicX, DT_EDITOR_PORT: String(deadPort) });
+    try {
+      assert.equal((await request(port, '/healthz')).status, 503);
+    } finally { child.kill(); }
+  });
+  test('503 within ~2 s when the editor accepts but never answers', async () => {
+    const sockets = [];
+    const hung = net.createServer((s) => sockets.push(s));
+    const hungPort = await listen(hung);
+    const { child, port } = await startProxy({ DT_GATEWAY_PUBLIC_KEY: publicX, DT_EDITOR_PORT: String(hungPort) });
+    try {
+      const t0 = Date.now();
+      const r = await request(port, '/healthz');
+      const took = Date.now() - t0;
+      assert.equal(r.status, 503);
+      assert.ok(took >= 1500 && took < 4000, `took ${took} ms`);
+    } finally {
+      child.kill();
+      for (const s of sockets) s.destroy();
+      await new Promise((r) => hung.close(r));
+    }
   });
 });
