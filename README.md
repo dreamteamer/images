@@ -82,9 +82,18 @@ The same `hq` image serves the hosted service when the platform sets:
   `DT_GATEWAY_PUBLIC_KEYS`, a JSON array of them for rotation (an assertion from any key verifies).
   Without a key that imports the container exits non-zero within a second and never listens.
 - `DT_ORIGIN_HOST` — required; the audience every assertion must name.
-- `DT_PERSIST_HOME` — a directory on the workspace volume. `dt-persist-home` moves the durable parts of
-  `$HOME` there (editor state, agent CLI logins, git and ssh config) and links them back, so a replaced
-  machine comes up with the same logins and settings.
+- `DT_PERSIST_HOME` — a directory on the workspace volume that becomes node's WHOLE home (layout 2,
+  0.5.0): logins, editor state, git credentials, shell history, caches. A Fly machine's own filesystem is
+  rebuilt on every stop/start, so nothing else in `~` would survive. A layout-1 volume is migrated once.
+
+Several workspaces per machine (hosted, 0.5.0): a bare machine URL opens the **machine home**
+(`/opt/dt-launcher`, the "This machine" view): every folder under `/workspaces`, **New workspace from
+template**, **Clone a repository**, **Empty folder**, open in a new tab or this one, and a status-bar
+switcher in every tab. Each workspace is its own tab (`?folder=/workspaces/<name>`), so it gets its own
+`CLAUDE.md`, skills and chat history. `dt-new <name> [--empty | --clone <url> [--install]]` does the same
+from a terminal. All workspaces on a machine share one home and one set of logins; separation between
+clients or people is a second machine. Workspace trust stays on: a clone opens in Restricted Mode, and a
+cloned dreamteamer repo is installed and compiled only when asked (that runs code the repo chose).
 - `DT_EGRESS_MBIT` — egress bandwidth cap, default 20. `DT_EGRESS_POLICY=off` skips the egress policy,
   with a loud log line; debugging only.
 

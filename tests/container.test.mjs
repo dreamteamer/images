@@ -208,8 +208,10 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 			assert.equal((await execIn(hosted, 'cat /workspaces/files/meetings/a.txt')).out, 'A\n');
 			assert.equal((await execIn(hosted, 'ls -A /files')).out, '');
 			assert.equal((await execIn(hosted, 'stat -c %U /workspaces/files')).out.trim(), 'node');
-			const env = await execIn(hosted, 'tr "\\0" "\\n" < /proc/$(pgrep -u node -o -f "^/usr/lib/code-server/lib/node")/environ | grep ^FILES_FOLDER=', 'node');
-			assert.equal(env.out.trim(), 'FILES_FOLDER=/workspaces/files');
+			// not exported machine-wide any more: each workspace names its own in its .env (a second workspace
+			// on the machine must never inherit the first one's)
+			const env = await execIn(hosted, 'tr "\\0" "\\n" < /proc/$(pgrep -u node -o -f "^/usr/lib/code-server/lib/node")/environ | grep -c ^FILES_FOLDER= || true', 'node');
+			assert.equal(env.out.trim(), '0');
 			const logs = await docker(['logs', hosted]);
 			assert.match(logs.out + logs.err, /rewritten from \/files to \/workspaces\/files/);
 			assert.match(logs.out + logs.err, /moved 1 entry from \/files to \/workspaces\/files/);
@@ -225,6 +227,57 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 		} finally {
 			for (const v of vols) await docker(['volume', 'rm', '-f', v]);
 		}
+	});
+
+	test('hosted: the whole home is on the volume and survives a replaced machine; a layout-1 home is migrated', async () => {
+		const tag = `${process.pid}`;
+		const vol = `dt-ct-home-${tag}`;
+		const mounts = ['-v', `${vol}:/workspaces`];
+		try {
+			// a volume as layout 1 left it: short names, marker 1
+			const seed = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'root', ...mounts, IMG, '-c',
+				'mkdir -p /workspaces/.home/claude && echo login > /workspaces/.home/claude/.credentials.json && echo 1 > /workspaces/.home/.dt-persist-layout && chown -R node:node /workspaces']);
+			assert.equal(seed.code, 0, seed.err);
+			const first = `dt-ct-home-a-${tag}`;
+			await run(first, ['--cap-add', 'NET_ADMIN', ...mounts, ...hostedEnv]);
+			await waitHealthy(first);
+			assert.equal((await execIn(first, 'cat /workspaces/.home/.claude/.credentials.json')).out, 'login\n');
+			const home = await execIn(first, 'tr "\\0" "\\n" < /proc/$(pgrep -u node -o -f "^/usr/lib/code-server/lib/node")/environ | grep -E "^(HOME|DISABLE_AUTOUPDATER)="', 'node');
+			assert.deepEqual(home.out.trim().split('\n').sort(), ['DISABLE_AUTOUPDATER=1', 'HOME=/workspaces/.home']);
+			// what layout 1 lost at every stop: anything else in ~
+			await execIn(first, 'cd ~ && echo hist > .bash_history && mkdir -p .local/bin && echo t > .local/bin/tool && printf "https://u:p@example.test\\n" > .git-credentials', 'node');
+			assert.equal((await execIn(first, 'git config --global credential.helper', 'node')).out.trim(), 'store');
+			await docker(['rm', '-f', first]);
+			// a brand-new container on the same volume: a replaced machine
+			const second = `dt-ct-home-b-${tag}`;
+			await run(second, ['--cap-add', 'NET_ADMIN', ...mounts, ...hostedEnv]);
+			await waitHealthy(second);
+			assert.equal((await execIn(second, 'cat ~/.bash_history ~/.local/bin/tool ~/.git-credentials', 'node')).out, 'hist\nt\nhttps://u:p@example.test\n');
+			await docker(['rm', '-f', second]);
+		} finally {
+			await docker(['volume', 'rm', '-f', vol]);
+		}
+	});
+
+	test('hosted: a bare URL opens the machine home (not the last folder); trust stays on; the launcher and dt-new are installed', async () => {
+		const name = `dt-ct-launch-${process.pid}`;
+		await run(name, ['--cap-add', 'NET_ADMIN', ...hostedEnv]);
+		await waitHealthy(name);
+		const cmd = await execIn(name, 'ps -o args= -u node | grep -m1 "code-server.*--bind-addr 127.0.0.1:8081"');
+		assert.match(cmd.out, /--ignore-last-opened \/opt\/dt-launcher\s*$/);
+		const settings = JSON.parse((await execIn(name, 'cat ~/.local/share/code-server/User/settings.json', 'node')).out);
+		assert.equal(settings['task.allowAutomaticTasks'], 'off');
+		assert.equal(settings['chat.disableAIFeatures'], true);
+		assert.notEqual(settings['security.workspace.trust.enabled'], false);
+		assert.match((await execIn(name, 'ls /opt/code-server/extensions')).out, /dreamteamer-hosted\.dt-machine-/);
+		assert.match((await execIn(name, 'stat -c "%U %a" /usr/local/bin/dt-new')).out, /^root 755/);
+		// dt-new, for real, as the workspace user: a second workspace with its own files folder, compiled
+		const r = await execIn(name, 'dt-new second', 'node');
+		assert.equal(r.code, 0, r.out + r.err);
+		assert.equal((await execIn(name, 'cat /workspaces/second/.env')).out, 'FILES_FOLDER=/workspaces/.files/second\n');
+		assert.equal((await execIn(name, 'test -d /workspaces/second/.dreamteamer && echo compiled')).out.trim(), 'compiled');
+		assert.notEqual((await execIn(name, 'dt-new files --empty', 'node')).code, 0);
+		await docker(['rm', '-f', name]);
 	});
 
 	test('DT_EGRESS_POLICY=off starts hosted without NET_ADMIN, and says so loudly', async () => {

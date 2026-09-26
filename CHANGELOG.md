@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 — 2026-09-26 — several workspaces per machine; the whole home persists
+
+- **The whole home is on the volume** (hosted). `DT_PERSIST_HOME` is node's home itself, not a list of
+  linked paths: measured on Fly, a machine's own filesystem is rebuilt on every stop/start, so layout 1
+  lost `~/.git-credentials`, shell history, `~/.npmrc`, `~/.local/bin` and caches at every stop. Caches
+  persist too (a typical web app's npm cache is ~370 MB and cuts an install from 19 s to 6 s). A
+  layout-1 volume is migrated once; node's account home points at the volume, so every way in agrees.
+  Claude Code's self-updater is off (`DISABLE_AUTOUPDATER=1`): the image pins its version.
+- **Machine home and many workspaces** (hosted). A bare URL opens `/opt/dt-launcher`, whatever was open
+  last; the built-in `dreamteamer machine` extension lists `/workspaces/*` and creates (template, clone,
+  empty), opens (new tab / this tab), switches and deletes. `dt-new` is the terminal form: one name rule,
+  reserved names refused, its own `FILES_FOLDER` (`/workspaces/.files/<name>`), a cloned repo never
+  installed or compiled without `--install`.
+- **Safer editor defaults:** workspace trust stays on, `task.allowAutomaticTasks: off`,
+  `chat.disableAIFeatures: true`, `files.enableTrash: false`; git's `credential.helper store` (the file is
+  in the persisted home), unless the person chose another.
+- **`FILES_FOLDER` is no longer exported machine-wide:** each workspace's `.env` names its own.
+
 ## 0.4.1 — 2026-09-25
 
 - **Hosted `FILES_FOLDER` is on the persistent volume** (Codex second review #4). With `DT_MODE=hosted`

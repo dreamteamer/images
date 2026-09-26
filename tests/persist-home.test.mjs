@@ -1,6 +1,7 @@
-// dt-persist-home: the durable parts of $HOME live on the volume and survive a fresh home directory.
+// dt-persist-home, layout 2: the WHOLE home of the workspace user lives on the volume (measured: a Fly
+// machine's own filesystem is rebuilt on every stop/start), and a layout-1 volume is migrated once.
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, test } from 'node:test';
@@ -8,62 +9,70 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT = fileURLToPath(new URL('../hq/persist-home.sh', import.meta.url));
-const run = (root, home) => execFileSync('sh', [SCRIPT, root, home], { encoding: 'utf8' });
+const run = (root) => execFileSync('sh', [SCRIPT, root], { encoding: 'utf8' });
+const fresh = () => path.join(mkdtempSync(path.join(tmpdir(), 'persist-')), 'vol', '.home');
 
-describe('dt-persist-home', () => {
-  test('moves baked-in state onto the volume once, links it, and writes the layout marker', () => {
-    const base = mkdtempSync(path.join(tmpdir(), 'persist-'));
-    const home = path.join(base, 'home');
-    const root = path.join(base, 'vol', '.home');
-    mkdirSync(path.join(home, '.local/share/code-server/User'), { recursive: true });
-    writeFileSync(path.join(home, '.local/share/code-server/User/settings.json'), '{"git.autofetch":true}');
-    writeFileSync(path.join(home, '.claude.json'), '{"a":1}');
-
-    run(root, home);
-    assert.equal(readFileSync(path.join(root, 'code-server/User/settings.json'), 'utf8'), '{"git.autofetch":true}');
-    assert.equal(readlinkSync(path.join(home, '.local/share/code-server')), path.join(root, 'code-server'));
-    assert.equal(readlinkSync(path.join(home, '.claude.json')), path.join(root, 'claude.json'));
-    assert.equal(readFileSync(path.join(root, 'claude.json'), 'utf8'), '{"a":1}');
-    for (const rel of ['.claude', '.codex', '.gemini', '.config', '.ssh', '.gitconfig']) assert.ok(lstatSync(path.join(home, rel)).isSymbolicLink(), rel);
-    assert.equal(readFileSync(path.join(root, '.dt-persist-layout'), 'utf8').trim(), '1');
+describe('dt-persist-home (layout 2: the home IS the volume directory)', () => {
+  test('a fresh volume becomes a usable home: editor dir, skeleton dotfiles when the system has them, marker 2', () => {
+    const root = fresh();
+    run(root);
+    assert.ok(lstatSync(path.join(root, '.local/share/code-server/User')).isDirectory());
+    assert.equal(readFileSync(path.join(root, '.dt-persist-layout'), 'utf8').trim(), '2');
+    if (existsSync('/etc/skel/.bashrc')) assert.ok(existsSync(path.join(root, '.bashrc')));
   });
 
-  test('a fresh home (machine replaced) gets the volume’s state back, and running twice is a no-op', () => {
-    const base = mkdtempSync(path.join(tmpdir(), 'persist-'));
-    const root = path.join(base, 'vol', '.home');
-    const home1 = path.join(base, 'home1');
-    mkdirSync(path.join(home1, '.claude'), { recursive: true });
-    writeFileSync(path.join(home1, '.claude', 'login.json'), 'session-from-first-machine');
-    run(root, home1);
-    run(root, home1);
-    assert.equal(readFileSync(path.join(home1, '.claude', 'login.json'), 'utf8'), 'session-from-first-machine');
-
-    const home2 = path.join(base, 'home2'); // a brand-new machine, same volume
-    mkdirSync(path.join(home2, '.claude'), { recursive: true });
-    writeFileSync(path.join(home2, '.claude', 'login.json'), 'baked-empty-state');
-    run(root, home2);
-    // the volume wins; the new machine's baked state is discarded, not merged over the persisted login
-    assert.equal(readFileSync(path.join(home2, '.claude', 'login.json'), 'utf8'), 'session-from-first-machine');
-    assert.equal(readlinkSync(path.join(home2, '.claude')), path.join(root, 'claude'));
-    assert.ok(!existsSync(path.join(base, 'home2', '.claude', 'stray')));
+  test('anything written anywhere in the home stays, including what layout 1 lost (git credentials, history, npmrc)', () => {
+    const root = fresh();
+    run(root);
+    for (const f of ['.git-credentials', '.bash_history', '.npmrc', '.local/bin/tool']) {
+      mkdirSync(path.dirname(path.join(root, f)), { recursive: true });
+      writeFileSync(path.join(root, f), f);
+    }
+    run(root); // the next boot
+    for (const f of ['.git-credentials', '.bash_history', '.npmrc', '.local/bin/tool']) assert.equal(readFileSync(path.join(root, f), 'utf8'), f);
   });
 
-  test('a home with NONE of the paths (the real image) still gets working directories, not dangling links', () => {
-    const base = mkdtempSync(path.join(tmpdir(), 'persist-'));
-    const home = path.join(base, 'home');
-    const root = path.join(base, 'vol', '.home');
-    mkdirSync(home, { recursive: true });
-    run(root, home);
-    // exactly what the entrypoint does next, and what crashed the first hosted machine
-    execFileSync('mkdir', ['-p', path.join(home, '.local/share/code-server/User')]);
-    writeFileSync(path.join(home, '.local/share/code-server/User/settings.json'), '{}');
-    assert.equal(readFileSync(path.join(root, 'code-server/User/settings.json'), 'utf8'), '{}');
-    for (const dir of ['claude', 'codex', 'gemini', 'config', 'ssh']) assert.ok(lstatSync(path.join(root, dir)).isDirectory(), dir);
-    // file entries are links whose target appears on first write
-    assert.ok(lstatSync(path.join(home, '.gitconfig')).isSymbolicLink());
-    assert.ok(!existsSync(path.join(root, 'gitconfig')));
-    writeFileSync(path.join(home, '.gitconfig'), '[user]\n\tname = x\n');
-    assert.ok(existsSync(path.join(root, 'gitconfig')));
+  test("a layout-1 volume is migrated once: short names move to their real paths, a person's .bashrc is never replaced", () => {
+    const root = fresh();
+    mkdirSync(path.join(root, 'claude'), { recursive: true });
+    writeFileSync(path.join(root, 'claude', '.credentials.json'), 'login');
+    mkdirSync(path.join(root, 'code-server', 'User'), { recursive: true });
+    writeFileSync(path.join(root, 'code-server', 'User', 'settings.json'), '{"a":1}');
+    mkdirSync(path.join(root, 'config', 'gh'), { recursive: true });
+    writeFileSync(path.join(root, 'config', 'gh', 'hosts.yml'), 'gh');
+    writeFileSync(path.join(root, 'gitconfig'), '[user]\n\tname = x\n');
+    writeFileSync(path.join(root, 'claude.json'), '{"b":2}');
+    mkdirSync(path.join(root, 'ssh'), { recursive: true });
+    writeFileSync(path.join(root, '.bashrc'), 'mine');
+    writeFileSync(path.join(root, '.dt-persist-layout'), '1\n');
+
+    const out = run(root);
+    assert.match(out, /layout 1→2/);
+    assert.equal(readFileSync(path.join(root, '.claude', '.credentials.json'), 'utf8'), 'login');
+    assert.equal(readFileSync(path.join(root, '.local/share/code-server/User/settings.json'), 'utf8'), '{"a":1}');
+    assert.equal(readFileSync(path.join(root, '.config/gh/hosts.yml'), 'utf8'), 'gh');
+    assert.equal(readFileSync(path.join(root, '.gitconfig'), 'utf8'), '[user]\n\tname = x\n');
+    assert.equal(readFileSync(path.join(root, '.claude.json'), 'utf8'), '{"b":2}');
+    assert.ok(lstatSync(path.join(root, '.ssh')).isDirectory());
+    for (const old of ['claude', 'code-server', 'config', 'gitconfig', 'claude.json', 'ssh']) assert.ok(!existsSync(path.join(root, old)), old);
+    assert.equal(readFileSync(path.join(root, '.bashrc'), 'utf8'), 'mine');
+    assert.equal(readFileSync(path.join(root, '.dt-persist-layout'), 'utf8').trim(), '2');
+
+    // the next boot changes nothing and says nothing about a migration
+    assert.doesNotMatch(run(root), /layout 1→2/);
+    assert.equal(readFileSync(path.join(root, '.claude', '.credentials.json'), 'utf8'), 'login');
+  });
+
+  test('a migration never overwrites a real path that already exists', () => {
+    const root = fresh();
+    mkdirSync(path.join(root, 'claude'), { recursive: true });
+    writeFileSync(path.join(root, 'claude', 'x'), 'old');
+    mkdirSync(path.join(root, '.claude'), { recursive: true });
+    writeFileSync(path.join(root, '.claude', 'x'), 'new');
+    writeFileSync(path.join(root, '.dt-persist-layout'), '1\n');
+    assert.match(run(root), /already exists/);
+    assert.equal(readFileSync(path.join(root, '.claude', 'x'), 'utf8'), 'new');
+    assert.equal(readFileSync(path.join(root, 'claude', 'x'), 'utf8'), 'old');
   });
 
   test('refuses to run without a root', () => {

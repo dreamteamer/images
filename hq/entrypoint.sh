@@ -14,9 +14,11 @@
 #                    (/etc/dt/egress.nft + a tc bandwidth cap; failure is fatal, DT_EGRESS_POLICY=off is
 #                    the loud debugging opt-out); then code-server listens on 127.0.0.1:8081 and
 #                    dt-origin-proxy owns 8080, as its own user `dtproxy`, refusing every request without
-#                    a gateway assertion. DT_PERSIST_HOME names a directory on the workspace volume that the
-#                    durable parts of $HOME are moved onto, and FILES_FOLDER is /workspaces/files (on the
-#                    volume; dt-files-folder migrates a workspace that still points at /files).
+#                    a gateway assertion. DT_PERSIST_HOME names a directory on the workspace volume that IS
+#                    node's home (dt-persist-home, layout 2): the machine's own filesystem is rebuilt on
+#                    every stop/start. A bare URL opens the machine home (/opt/dt-launcher, the "This
+#                    machine" view); each workspace is a folder under /workspaces, one per tab, made with
+#                    dt-new, with its own FILES_FOLDER in its .env (hq's is /workspaces/files).
 #
 # Privilege: the image starts as root. This script stays root as a small supervisor (PID 1), so the
 # workspace user can signal neither it nor the proxy; everything else runs with setpriv, no new
@@ -29,7 +31,14 @@ log() { echo "dt-entrypoint: $*" >&2; }
 die() { echo "✖ dt-entrypoint: $*" >&2; exit 1; }
 
 WS="${DT_WORKSPACE_DIR:-/workspaces/${DT_WORKSPACE:-hq}}"
-EDITOR_ARGS=(--auth none --disable-telemetry --disable-update-check --extensions-dir /opt/code-server/extensions --user-data-dir /home/node/.local/share/code-server)
+# Hosted: the WHOLE home of node is a directory on the volume (dt-persist-home, layout 2), because the
+# machine's own filesystem is rebuilt on every stop/start. Local (Docker Desktop): the image's /home/node.
+NODE_HOME="${DT_PERSIST_HOME:-/home/node}"
+# Hosted: a bare machine URL opens the machine's home window (/opt/dt-launcher: every workspace, create,
+# clone), whatever was open last; a workspace is ?folder=/workspaces/<name>, one per tab. Local: the one
+# workspace `dt start container` made.
+LAUNCHER=/opt/dt-launcher
+EDITOR_ARGS=(--auth none --disable-telemetry --disable-update-check --extensions-dir /opt/code-server/extensions --user-data-dir "$NODE_HOME/.local/share/code-server")
 
 # ---- the workspace, prepared as node (the root phase re-enters this script with --prepare) ----
 prepare() {
@@ -55,16 +64,24 @@ prepare() {
   dt-files-folder "$WS" "${DT_MODE:-local}" /files /workspaces/files
   # Editor settings the person should never be asked about — git.autofetch answers "periodically run
   # git fetch?" once — merged into the settings file in the home volume, adding only keys it lacks.
-  SETTINGS=/home/node/.local/share/code-server/User/settings.json
+  SETTINGS="$HOME/.local/share/code-server/User/settings.json"
   mkdir -p "$(dirname "$SETTINGS")"
   node -e '
 const fs = require("fs"); const p = process.argv[1];
 let s = {}; try { s = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
-const defaults = { "git.autofetch": true, "git.confirmSync": false, "workbench.startupEditor": "none" };
+// Workspace trust stays ON: a cloned repository opens in Restricted Mode, so its .vscode tasks and
+// settings cannot run anything until the person trusts it; automatic tasks are off even then.
+const defaults = {
+  "git.autofetch": true, "git.confirmSync": false, "workbench.startupEditor": "none",
+  "task.allowAutomaticTasks": "off", "chat.disableAIFeatures": true, "files.enableTrash": false,
+};
 let changed = false;
 for (const [k, v] of Object.entries(defaults)) if (!(k in s)) { s[k] = v; changed = true; }
 if (changed) fs.writeFileSync(p, JSON.stringify(s, null, "\t") + "\n");
 ' "$SETTINGS"
+  # git keeps an HTTPS login in ~/.git-credentials, which is on the volume in hosted mode (one login for
+  # every workspace on the machine); an explicit choice the person made is left alone
+  git config --global --get credential.helper >/dev/null || git config --global credential.helper store
   npx dreamteamer compile
 }
 
@@ -98,8 +115,8 @@ if [ "$MODE" = hosted ]; then
   # fail closed, fast: no key that imports, or no audience, and nothing listens
   /usr/local/bin/node /usr/local/bin/dt-origin-proxy --check || die "hosted mode needs DT_GATEWAY_PUBLIC_KEY (or DT_GATEWAY_PUBLIC_KEYS) and DT_ORIGIN_HOST — refusing to start the public listener"
   id dtproxy >/dev/null 2>&1 || die "the dtproxy user is missing from the image"
-  # the files the records point at live on the persistent volume, not in the image's /files
-  export FILES_FOLDER=/workspaces/files
+  # FILES_FOLDER is NOT exported: each workspace names its own in its .env (dt-files-folder, dt-new), so a
+  # second workspace on the machine never inherits the first one's
   PROXY_ENV=(DT_PROXY_PORT=8080 DT_EDITOR_PORT=8081 "DT_ORIGIN_HOST=$DT_ORIGIN_HOST")
   [ -z "${DT_GATEWAY_PUBLIC_KEY:-}" ] || PROXY_ENV+=("DT_GATEWAY_PUBLIC_KEY=$DT_GATEWAY_PUBLIC_KEY")
   [ -z "${DT_GATEWAY_PUBLIC_KEYS:-}" ] || PROXY_ENV+=("DT_GATEWAY_PUBLIC_KEYS=$DT_GATEWAY_PUBLIC_KEYS")
@@ -128,7 +145,15 @@ for d in /workspaces /files; do
   if [ -d "$d" ] && [ "$(stat -c %u "$d")" != "$(id -u node)" ]; then chown node:node "$d"; fi
 done
 
-AS_NODE=(setpriv --reuid=node --regid=node --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all env HOME=/home/node USER=node LOGNAME=node)
+# DISABLE_AUTOUPDATER: the home persists now, so a CLI that updated itself there would outlive every image
+# release; the image pins Claude Code's version instead.
+# Every way in as node (a terminal, `fly ssh console`, `docker exec -u node`) gets the same home: the
+# account's own home directory points at the volume. The machine's filesystem is rebuilt at every boot,
+# so this is applied at every boot.
+if [ "$NODE_HOME" != /home/node ] && [ "$(getent passwd node | cut -d: -f6)" != "$NODE_HOME" ]; then
+  usermod -d "$NODE_HOME" node || die "could not point node's home at $NODE_HOME"
+fi
+AS_NODE=(setpriv --reuid=node --regid=node --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all env "HOME=$NODE_HOME" USER=node LOGNAME=node DISABLE_AUTOUPDATER=1)
 AS_PROXY=(setpriv --reuid=dtproxy --regid=dtproxy --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all)
 
 "${AS_NODE[@]}" /usr/local/bin/dt-entrypoint --prepare
@@ -139,7 +164,7 @@ STOPPING=0
 if [ "$MODE" = hosted ]; then
   (cd / && exec "${AS_PROXY[@]}" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "${PROXY_ENV[@]}" /usr/local/bin/node --disable-sigusr1 /usr/local/bin/dt-origin-proxy) &
   NAMES[$!]=dt-origin-proxy
-  (cd "$WS" && exec "${AS_NODE[@]}" code-server --bind-addr 127.0.0.1:8081 "${EDITOR_ARGS[@]}" "$WS") &
+  (cd "$WS" && exec "${AS_NODE[@]}" code-server --bind-addr 127.0.0.1:8081 "${EDITOR_ARGS[@]}" --ignore-last-opened "$LAUNCHER") &
   NAMES[$!]=code-server
 else
   (cd "$WS" && exec "${AS_NODE[@]}" code-server --bind-addr "$BIND:8080" "${EDITOR_ARGS[@]}" "$WS") &

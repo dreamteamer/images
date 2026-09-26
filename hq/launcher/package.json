@@ -1,0 +1,60 @@
+{
+	"name": "dt-machine",
+	"displayName": "dreamteamer machine",
+	"description": "The workspaces on this hosted machine: create one from the template, clone a repository, open each in its own tab, switch between them.",
+	"version": "0.1.0",
+	"publisher": "dreamteamer-hosted",
+	"license": "Apache-2.0",
+	"private": true,
+	"engines": { "vscode": "^1.93.0" },
+	"main": "./extension.js",
+	"activationEvents": ["onStartupFinished"],
+	"capabilities": {
+		"untrustedWorkspaces": { "supported": true, "description": "Reads only folder names under /workspaces and runs the machine's own dt-new; it executes nothing from a workspace." },
+		"virtualWorkspaces": false
+	},
+	"contributes": {
+		"viewsContainers": {
+			"activitybar": [{ "id": "dtMachine", "title": "This machine", "icon": "media/machine.svg" }]
+		},
+		"views": {
+			"dtMachine": [{ "id": "dtMachine.workspaces", "name": "Workspaces", "when": "dtMachine.hosted" }]
+		},
+		"viewsWelcome": [
+			{
+				"view": "dtMachine.workspaces",
+				"contents": "No workspaces on this machine yet.\n[New workspace from template](command:dtMachine.newWorkspace)\n[Clone a repository](command:dtMachine.cloneRepository)\n[Empty folder](command:dtMachine.newEmptyWorkspace)"
+			}
+		],
+		"commands": [
+			{ "command": "dtMachine.newWorkspace", "title": "New workspace from template…", "category": "dreamteamer machine", "icon": "$(add)" },
+			{ "command": "dtMachine.cloneRepository", "title": "Clone a repository…", "category": "dreamteamer machine", "icon": "$(repo-clone)" },
+			{ "command": "dtMachine.newEmptyWorkspace", "title": "New empty workspace…", "category": "dreamteamer machine" },
+			{ "command": "dtMachine.openWorkspace", "title": "Open in new tab", "category": "dreamteamer machine", "icon": "$(link-external)" },
+			{ "command": "dtMachine.openWorkspaceHere", "title": "Open in this tab", "category": "dreamteamer machine", "icon": "$(folder-opened)" },
+			{ "command": "dtMachine.deleteWorkspace", "title": "Delete workspace…", "category": "dreamteamer machine", "icon": "$(trash)" },
+			{ "command": "dtMachine.switchWorkspace", "title": "Switch workspace…", "category": "dreamteamer machine" },
+			{ "command": "dtMachine.openHome", "title": "Machine home", "category": "dreamteamer machine", "icon": "$(home)" },
+			{ "command": "dtMachine.refresh", "title": "Refresh", "category": "dreamteamer machine", "icon": "$(refresh)" }
+		],
+		"menus": {
+			"view/title": [
+				{ "command": "dtMachine.newWorkspace", "when": "view == dtMachine.workspaces", "group": "navigation@1" },
+				{ "command": "dtMachine.cloneRepository", "when": "view == dtMachine.workspaces", "group": "navigation@2" },
+				{ "command": "dtMachine.refresh", "when": "view == dtMachine.workspaces", "group": "navigation@3" },
+				{ "command": "dtMachine.newEmptyWorkspace", "when": "view == dtMachine.workspaces" },
+				{ "command": "dtMachine.openHome", "when": "view == dtMachine.workspaces" }
+			],
+			"view/item/context": [
+				{ "command": "dtMachine.openWorkspace", "when": "view == dtMachine.workspaces && viewItem =~ /workspace/", "group": "inline@1" },
+				{ "command": "dtMachine.openWorkspaceHere", "when": "view == dtMachine.workspaces && viewItem =~ /workspace/", "group": "inline@2" },
+				{ "command": "dtMachine.deleteWorkspace", "when": "view == dtMachine.workspaces && viewItem == workspace", "group": "z@1" }
+			],
+			"commandPalette": [
+				{ "command": "dtMachine.openWorkspace", "when": "false" },
+				{ "command": "dtMachine.openWorkspaceHere", "when": "false" },
+				{ "command": "dtMachine.deleteWorkspace", "when": "false" }
+			]
+		}
+	}
+}

@@ -15,6 +15,12 @@
 #
 # Supply chain: the base is pinned by digest (Dependabot bumps it), code-server is the release .deb
 # checked against the sha256 GitHub lists for that asset, apt installs nothing recommended.
+# The machine launcher extension (hq/launcher), packaged here and installed below; not published.
+FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS launcher
+WORKDIR /src
+COPY launcher/ ./
+RUN npx --yes @vscode/vsce@3.6.0 package --allow-missing-repository --skip-license --out /dt-machine.vsix
+
 FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
 ARG DT_VERSION=0.28.0
 ARG EXT_VERSION=0.11.0
@@ -58,10 +64,21 @@ RUN useradd --system --user-group --no-create-home --home-dir /nonexistent --she
 RUN npm install -g --no-audit --no-fund dreamteamer@${DT_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION} \
  && npm cache clean --force
 # Extensions live OUTSIDE the home volume, so a fresh /home/node on first start still has them.
+COPY --from=launcher /dt-machine.vsix /tmp/dt-machine.vsix
 RUN mkdir -p /opt/code-server/extensions \
  && code-server --extensions-dir /opt/code-server/extensions --install-extension anthropic.claude-code \
  && code-server --extensions-dir /opt/code-server/extensions --install-extension dreamteamer.dreamteamer-vscode \
+ && code-server --extensions-dir /opt/code-server/extensions --install-extension /tmp/dt-machine.vsix \
+ && rm -f /tmp/dt-machine.vsix \
  && chown -R node:node /opt/code-server
+# The machine's home window: a folder of its own (not /workspaces, so the home directory on the volume
+# is never in its Explorer or search, and trusting it trusts no workspace). Read-only.
+RUN mkdir -p /opt/dt-launcher && printf '%s\n' \
+  '# This machine' '' \
+  'Every workspace on this machine is in the **This machine** view on the left: open one in a new tab,' \
+  'make one from the dreamteamer template, or clone a repository. Start agents INSIDE a workspace, not here.' '' \
+  'All workspaces on a machine share one home and one set of logins (git, Claude, Codex). Keep work that' \
+  'must stay separate — another client, another person — on another machine.' > /opt/dt-launcher/README.md
 RUN mkdir -p /opt/dt-template /workspaces /files && chown -R node:node /opt/dt-template /workspaces /files
 USER node
 # The workspace template, built ONCE here: init, the hq bundle trimmed to its modules, compile.
@@ -79,6 +96,7 @@ RUN git init -q && git config user.name dreamteamer && git config user.email dre
 COPY --chown=root:root --chmod=0755 entrypoint.sh /usr/local/bin/dt-entrypoint
 COPY --chown=root:root --chmod=0755 persist-home.sh /usr/local/bin/dt-persist-home
 COPY --chown=root:root --chmod=0755 files-folder.sh /usr/local/bin/dt-files-folder
+COPY --chown=root:root --chmod=0755 new-workspace.sh /usr/local/bin/dt-new
 COPY --chown=root:root --chmod=0755 origin-proxy.mjs /usr/local/bin/dt-origin-proxy
 COPY --chown=root:root --chmod=0644 egress.nft /etc/dt/egress.nft
 WORKDIR /workspaces

@@ -10,7 +10,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
 const TEMPLATES = ['hq', 'hq-agents'];
-const sources = TEMPLATES.flatMap((t) => fs.readdirSync(path.join(ROOT, t)).map((f) => [`${t}/${f}`, read(t, f)]));
+// every file under a template, subfolders included (hq/launcher is the machine launcher extension)
+const walk = (dir) => fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(`${dir}/${e.name}`) : [`${dir}/${e.name}`]));
+const sources = TEMPLATES.flatMap((t) => walk(t)).map((f) => [f, read(f)]);
 const label = (dockerfile, name) => dockerfile.match(new RegExp(`dreamteamer\\.${name}="([^"]*)"`))?.[1];
 
 describe('nothing personal, nothing secret — in any template', () => {
@@ -93,6 +95,9 @@ describe('what makes an image a template', () => {
 		const d = read('hq', 'Dockerfile'); const e = read('hq', 'entrypoint.sh');
 		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension anthropic\.claude-code/);
 		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension dreamteamer\.dreamteamer-vscode/);
+		// the machine launcher, packaged from hq/launcher in its own build stage
+		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension \/tmp\/dt-machine\.vsix/);
+		assert.match(d, /@vscode\/vsce@\d+\.\d+\.\d+ package/);
 		assert.match(e, /--extensions-dir \/opt\/code-server\/extensions/);
 		assert.match(d, /"recommendations": \["dreamteamer\.dreamteamer-vscode", "anthropic\.claude-code", "ms-vscode-remote\.remote-containers"\]/);
 	});
