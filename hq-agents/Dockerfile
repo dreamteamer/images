@@ -24,6 +24,12 @@ RUN npm install -g --no-audit --no-fund @openai/codex@${CODEX_VERSION} @google/g
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
  && (command -v agy >/dev/null || (ls /root/.local/bin/agy >/dev/null 2>&1 && install -m 0755 /root/.local/bin/agy /usr/local/bin/agy)) \
  && command -v agy
+# Agents under trust, image-wide. Gemini CLI: folder trust pinned ON in the system settings file, which
+# overrides the user's and the project's; in an untrusted folder .gemini/settings.json (its hooks and MCP
+# servers), .env and custom commands are ignored. Codex needs no switch: it loads a project's .codex/ layers
+# (config.toml and its MCP servers, hooks, rules) only once the project is trusted, and this image trusts no
+# path. Antigravity (agy) asks before it opens a folder but offers no image-wide setting: see the README.
+COPY --chown=root:root --chmod=0644 gemini-cli/settings.json /etc/gemini-cli/settings.json
 # strip whatever setuid/setgid bits the installs above added, as hq does
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 # root, like hq: the entrypoint applies the egress policy and drops every process it starts itself

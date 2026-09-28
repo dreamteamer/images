@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0 — 2026-09-28 — local mode behind a URL token; agents under trust
+
+- **Local mode runs behind the origin proxy.** The proxy runs as `dtproxy` on 8080 (bound to
+  `DT_LOCAL_BIND`, default `127.0.0.1`), with code-server on `127.0.0.1:8081`, the same two processes as
+  hosted mode. Hosted mode is unchanged. A URL token (32 random bytes, base64url) is written on first start
+  to `/home/node/.dt/url-token`, `root:dtproxy 0640`, where the proxy can read it and `node` cannot.
+  `?tkn=<token>` sets an `HttpOnly; SameSite=Strict` cookie (`dt_local_<port>`) and redirects without the
+  token. Without the cookie a request gets 401; a `Host` that is not `localhost`/`127.0.0.1`/`[::1]` gets
+  403; `/healthz` stays open. A rotation takes effect on the next request (the proxy re-reads the file on an
+  mtime change). `DT_LOCAL_AUTH=off` turns the check off and logs a warning. A bare URL opens the machine
+  home in local mode too.
+- **`dt-url-token show|rotate`** (root only) and **`/opt/dt-image/features`** (`url-token`): the engine
+  reads the token through a root `docker exec` and opens the tokened URL.
+- **`dt-new` refuses a root that is not a real mount** (`findmnt`: `overlay`, `tmpfs`, `ramfs`), naming the
+  mount to add, in both modes.
+- **Agents under trust (R2.7).** Claude Code: managed `enableAllProjectMcpServers: false`. Gemini CLI:
+  folder trust pinned on in `/etc/gemini-cli/settings.json`. Codex needs no setting, since it ignores an
+  untrusted project's `.codex/`. The README's "Agents and trust" table lists what no setting covers
+  (`claude -p` in an untrusted folder, Antigravity).
+- **Editor extensions pinned by version (R2.8):** `anthropic.claude-code@2.1.281` (the CLI's version) and
+  `dreamteamer.dreamteamer-vscode@0.18.2`, in code-server and in `devcontainer.metadata`.
+- **Breaking:** a non-root start (`-u node`) has no proxy and so no token, and now refuses
+  `DT_LOCAL_BIND=0.0.0.0` unless `DT_LOCAL_AUTH=off`.
+
 ## 0.5.0 — 2026-09-26 — several workspaces per machine; the whole home persists
 
 - **The whole home is on the volume** (hosted). `DT_PERSIST_HOME` is node's home itself, not a list of

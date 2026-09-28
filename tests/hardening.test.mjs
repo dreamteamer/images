@@ -18,7 +18,7 @@ describe('IMG-1/IMG-2: the auth boundary is not the workspace user\'s to rewrite
 		assert.match(dockerfile, /useradd --system --user-group --no-create-home --home-dir \/nonexistent --shell \/usr\/sbin\/nologin dtproxy/);
 	});
 	test('the three executables are root-owned and 0755; nothing security-relevant is COPYed as node', () => {
-		for (const [src, dst] of [['entrypoint.sh', 'dt-entrypoint'], ['persist-home.sh', 'dt-persist-home'], ['origin-proxy.mjs', 'dt-origin-proxy'], ['files-folder.sh', 'dt-files-folder']]) {
+		for (const [src, dst] of [['entrypoint.sh', 'dt-entrypoint'], ['persist-home.sh', 'dt-persist-home'], ['origin-proxy.mjs', 'dt-origin-proxy'], ['files-folder.sh', 'dt-files-folder'], ['url-token.sh', 'dt-url-token']]) {
 			assert.match(dockerfile, new RegExp(`^COPY --chown=root:root --chmod=0755 ${src.replace('.', '\\.')} /usr/local/bin/${dst}$`, 'm'), dst);
 		}
 		assert.doesNotMatch(dockerfile, /^COPY --chown=node/m);
@@ -178,10 +178,10 @@ describe('CI: pinned, least privilege, gated, recorded, signed', () => {
 	});
 });
 
-describe('0.5.0', () => {
+describe('0.6.0', () => {
 	test('package.json and the CHANGELOG agree on the version, and the newest CHANGELOG entry is it', () => {
 		const v = JSON.parse(read('package.json')).version;
-		assert.equal(v, '0.5.0');
+		assert.equal(v, '0.6.0');
 		assert.equal(read('CHANGELOG.md').match(/^## (\d+\.\d+\.\d+)/m)?.[1], v);
 	});
 });

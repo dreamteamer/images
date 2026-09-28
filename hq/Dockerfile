@@ -26,6 +26,10 @@ ARG DT_VERSION=0.28.0
 ARG EXT_VERSION=0.11.0
 ARG CLAUDE_VERSION=2.1.281
 ARG CODE_SERVER_VERSION=4.138.0
+# The two editor extensions, pinned (Open VSX, which code-server installs from). The Claude Code extension
+# follows the CLI's version; devcontainer.metadata below names the same two versions, literally.
+ARG CLAUDE_VSCODE_VERSION=2.1.281
+ARG DT_VSCODE_VERSION=0.18.2
 # sha256 of code-server_${CODE_SERVER_VERSION}_<arch>.deb, from the v4.138.0 release's asset digests (read 2026-09-25)
 ARG CODE_SERVER_SHA256_AMD64=044eddb4871c9ab7e3a26e23bb472c8fbfedb2723fa2db7c964d903b491ff643
 ARG CODE_SERVER_SHA256_ARM64=a0f404035146ecbd596cc204300ea48f1e2ad6b7ed4c677291e82487a71dec40
@@ -41,7 +45,7 @@ LABEL dreamteamer.template="hq" \
 # (`dt open container <name> --vscode`), the Dev Containers extension reads this label and installs
 # these extensions into the container's VS Code Server — a second extension host beside code-server's,
 # over the same files — and runs as `node`, the user that owns the workspace.
-LABEL devcontainer.metadata='[{"remoteUser":"node","customizations":{"vscode":{"extensions":["dreamteamer.dreamteamer-vscode","anthropic.claude-code"],"settings":{"git.autofetch":true}}}}]'
+LABEL devcontainer.metadata='[{"remoteUser":"node","customizations":{"vscode":{"extensions":["dreamteamer.dreamteamer-vscode@0.18.2","anthropic.claude-code@2.1.281"],"settings":{"git.autofetch":true}}}}]'
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 # nftables + iproute2: the hosted egress policy (entrypoint, root phase). Unpinned on purpose: the base
@@ -66,8 +70,8 @@ RUN npm install -g --no-audit --no-fund dreamteamer@${DT_VERSION} @anthropic-ai/
 # Extensions live OUTSIDE the home volume, so a fresh /home/node on first start still has them.
 COPY --from=launcher /dt-machine.vsix /tmp/dt-machine.vsix
 RUN mkdir -p /opt/code-server/extensions \
- && code-server --extensions-dir /opt/code-server/extensions --install-extension anthropic.claude-code \
- && code-server --extensions-dir /opt/code-server/extensions --install-extension dreamteamer.dreamteamer-vscode \
+ && code-server --extensions-dir /opt/code-server/extensions --install-extension "anthropic.claude-code@${CLAUDE_VSCODE_VERSION}" \
+ && code-server --extensions-dir /opt/code-server/extensions --install-extension "dreamteamer.dreamteamer-vscode@${DT_VSCODE_VERSION}" \
  && code-server --extensions-dir /opt/code-server/extensions --install-extension /tmp/dt-machine.vsix \
  && rm -f /tmp/dt-machine.vsix \
  && chown -R node:node /opt/code-server
@@ -79,6 +83,9 @@ RUN mkdir -p /opt/dt-launcher && printf '%s\n' \
   'make one from the dreamteamer template, or clone a repository. Start agents INSIDE a workspace, not here.' '' \
   'All workspaces on a machine share one home and one set of logins (git, Claude, Codex). Keep work that' \
   'must stay separate — another client, another person — on another machine.' > /opt/dt-launcher/README.md
+# What this image can do, one word per line, for the engine to read before it relies on it (url-token: the
+# local-mode URL token behind dt-url-token).
+RUN mkdir -p /opt/dt-image && printf '%s\n' url-token > /opt/dt-image/features && chmod 0644 /opt/dt-image/features
 RUN mkdir -p /opt/dt-template /workspaces /files && chown -R node:node /opt/dt-template /workspaces /files
 USER node
 # The workspace template, built ONCE here: init, the hq bundle trimmed to its modules, compile.
@@ -99,6 +106,11 @@ COPY --chown=root:root --chmod=0755 files-folder.sh /usr/local/bin/dt-files-fold
 COPY --chown=root:root --chmod=0755 new-workspace.sh /usr/local/bin/dt-new
 COPY --chown=root:root --chmod=0755 origin-proxy.mjs /usr/local/bin/dt-origin-proxy
 COPY --chown=root:root --chmod=0644 egress.nft /etc/dt/egress.nft
+COPY --chown=root:root --chmod=0755 url-token.sh /usr/local/bin/dt-url-token
+# Claude Code under trust, image-wide: managed settings, above every user and project file. A repository's
+# own .mcp.json approvals already wait for the trust dialog; enableAllProjectMcpServers=false here also stops
+# a user-level true from approving every repository's servers. The gaps are in the README (Agents and trust).
+COPY --chown=root:root --chmod=0644 claude-code/managed-settings.json /etc/claude-code/managed-settings.json
 WORKDIR /workspaces
 EXPOSE 8080
 # root: the entrypoint applies the egress policy, chowns a freshly attached volume, and stays as a small

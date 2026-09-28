@@ -42,7 +42,11 @@ describe('nothing personal, nothing secret — in any template', () => {
 		assert.equal(writes.length, 3, writes.join('\n'));
 		assert.ok(writes.length >= 1);
 		for (const w of writes) assert.match(w, /FILES_FOLDER=/, w);
-		for (const t of [e, f]) assert.doesNotMatch(t, /TOKEN|PASSWORD|SECRET/i);
+		assert.doesNotMatch(f, /TOKEN|PASSWORD|SECRET/i);
+		// the entrypoint names the local URL token (0.6.0) only to create it through dt-url-token; it never
+		// reads the value, and nothing else about a token, password or secret appears in it
+		assert.doesNotMatch(e.replace(/dt-url-token|URL token|url-token|DT_URL_TOKEN_FILE|NO URL TOKEN/g, ''), /TOKEN|PASSWORD|SECRET/i);
+		assert.doesNotMatch(e, /cat [^\n]*url-token|dt-url-token show/);
 	});
 });
 
@@ -86,15 +90,23 @@ describe('what makes an image a template', () => {
 		assert.equal(label(d, 'template'), 'hq-agents');
 		assert.equal(label(d, 'agents'), 'claude,codex,gemini,agy');
 	});
-	test('the devcontainer.metadata label names both editor extensions and runs as node', () => {
-		const meta = JSON.parse(read('hq', 'Dockerfile').match(/devcontainer\.metadata='(\[.*\])'/)[1]);
+	test('the devcontainer.metadata label names both editor extensions, at the versions the image pins, and runs as node', () => {
+		const d = read('hq', 'Dockerfile');
+		const meta = JSON.parse(d.match(/devcontainer\.metadata='(\[.*\])'/)[1]);
 		assert.equal(meta[0].remoteUser, 'node');
-		assert.deepEqual(meta[0].customizations.vscode.extensions, ['dreamteamer.dreamteamer-vscode', 'anthropic.claude-code']);
+		const arg = (n) => d.match(new RegExp(`^ARG ${n}=(\\d+\\.\\d+\\.\\d+)$`, 'm'))?.[1];
+		assert.deepEqual(meta[0].customizations.vscode.extensions, [`dreamteamer.dreamteamer-vscode@${arg('DT_VSCODE_VERSION')}`, `anthropic.claude-code@${arg('CLAUDE_VSCODE_VERSION')}`]);
+	});
+	test('R2.8: both editor extensions are pinned by version; the Claude Code extension follows the CLI', () => {
+		const d = read('hq', 'Dockerfile');
+		for (const a of ['CLAUDE_VSCODE_VERSION', 'DT_VSCODE_VERSION']) assert.match(d, new RegExp(`^ARG ${a}=\\d+\\.\\d+\\.\\d+$`, 'm'), a);
+		assert.equal(d.match(/^ARG CLAUDE_VSCODE_VERSION=(.*)$/m)[1], d.match(/^ARG CLAUDE_VERSION=(.*)$/m)[1]);
+		for (const l of d.split('\n').filter((l) => /--install-extension (?!\/)/.test(l))) assert.match(l, /--install-extension "[a-z-]+\.[a-z-]+@\$\{[A-Z_]+_VERSION\}"/, l);
 	});
 	test('both editor extensions are baked outside the home volume, the server reads that directory, and the template recommends them', () => {
 		const d = read('hq', 'Dockerfile'); const e = read('hq', 'entrypoint.sh');
-		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension anthropic\.claude-code/);
-		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension dreamteamer\.dreamteamer-vscode/);
+		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension "anthropic\.claude-code@\$\{CLAUDE_VSCODE_VERSION\}"/);
+		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension "dreamteamer\.dreamteamer-vscode@\$\{DT_VSCODE_VERSION\}"/);
 		// the machine launcher, packaged from hq/launcher in its own build stage
 		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension \/tmp\/dt-machine\.vsix/);
 		assert.match(d, /@vscode\/vsce@\d+\.\d+\.\d+ package/);
