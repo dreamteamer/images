@@ -22,8 +22,8 @@
 // it whenever its mtime changes, so a rotation takes effect without a restart.
 //   GET <any path>?tkn=<token>  → 302 to the same URL without tkn, setting the session cookie
 //   everything else (HTTP and WebSocket) needs the cookie, else 401
-//   Host must be localhost, 127.0.0.1 or [::1] (any port), else 403 — DNS rebinding
-//   /healthz stays open, and says nothing but 200/503
+//   Host must be localhost, 127.0.0.1 or [::1] (any port), else 403 — DNS rebinding; /healthz included
+//   /healthz needs no token, and says nothing but 200/503
 // The cookie is named per host port (dt_local_<port>): cookies are not port-scoped, so two machines on
 // localhost:8100 and localhost:8101 would otherwise overwrite each other's. DT_LOCAL_AUTH=off drops the
 // token check (not the Host check), loudly; debugging only. DT_PROXY_BIND: 127.0.0.1 (default) or 0.0.0.0.
@@ -244,9 +244,13 @@ function plain(res, status, body, extra = {}) {
   res.end(body);
 }
 
+const FOREIGN_HOST = { status: 403, body: 'forbidden: this machine answers only to localhost\n' };
+/** True when the Host header names this computer: localhost, 127.0.0.1 or [::1], any port. */
+export function isLocalHost(host) { return LOCAL_HOSTS.has(localHostName(host)); }
+
 /** Decides one local request: { status, … } to answer, or { forward: true } to pass on. Pure but for readToken. */
 export function localDecision(req, { readToken, auth = true }) {
-  if (!LOCAL_HOSTS.has(localHostName(req.headers.host))) return { status: 403, body: 'forbidden: this machine answers only to localhost\n' };
+  if (!isLocalHost(req.headers.host)) return FOREIGN_HOST;
   const raw = String(req.url ?? '/');
   const q = raw.indexOf('?');
   const params = new URLSearchParams(q < 0 ? '' : raw.slice(q + 1));
@@ -268,6 +272,9 @@ export function localDecision(req, { readToken, auth = true }) {
 
 export function createLocalProxy({ tokenFile, readToken = tokenReader(tokenFile), auth = true, editorPort, healthTimeoutMs = HEALTH_TIMEOUT_MS }) {
   const server = http.createServer((req, res) => {
+    // the Host check comes first, /healthz included: a page on any site could otherwise probe
+    // localhost ports for one that answers 'ok' and learn a machine is running
+    if (!isLocalHost(req.headers.host)) { plain(res, FOREIGN_HOST.status, FOREIGN_HOST.body); return; }
     if (OPEN_PATHS.has(req.url?.split('?')[0])) {
       editorAnswers(editorPort, healthTimeoutMs).then((up) => plain(res, up ? 200 : 503, up ? 'ok\n' : 'editor unavailable\n'));
       return;

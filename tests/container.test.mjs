@@ -226,6 +226,8 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 				assert.match(await (await get('/')).text(), /dt open container/);
 				assert.equal((await get('/', { host: `evil.test:${port}` })).status, 403);
 				assert.equal((await get('/healthz')).status, 200);
+				assert.equal((await get('/healthz', { host: `127.0.0.1:${port}` })).status, 200, 'the engine\'s readiness probe');
+				assert.equal((await get('/healthz', { host: `evil.test:${port}` })).status, 403, 'no fingerprinting from another site');
 				const t = await token();
 				const r = await get(`/?tkn=${t}`);
 				assert.equal(r.status, 302);

@@ -135,6 +135,15 @@ describe('the local proxy', () => {
 		assert.equal(r.status, 200);
 		assert.equal(r.body, 'ok\n');
 	});
+	test('/healthz answers only a local Host: a page on another site cannot fingerprint a running machine', async () => {
+		// the engine's readiness probe (node:http to 127.0.0.1:<port>) sends Host 127.0.0.1:<port>
+		for (const host of [`127.0.0.1:${p.port}`, `[::1]:${p.port}`, `localhost:${p.port}`]) assert.equal((await request(p.port, '/healthz', { host })).status, 200, host);
+		for (const host of [`evil.test:${p.port}`, `localhost.evil.test:${p.port}`, `192.168.1.5:${p.port}`]) {
+			const r = await request(p.port, '/healthz', { host });
+			assert.equal(r.status, 403, host);
+			assert.doesNotMatch(r.body, /ok|editor/);
+		}
+	});
 	test('no cookie → 401 naming `dt open container`, nothing forwarded', async () => {
 		const n = seen.length;
 		const r = await request(p.port, '/?folder=/workspaces/x');
