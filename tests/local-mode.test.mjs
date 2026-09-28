@@ -75,10 +75,12 @@ describe('R2.7: agent CLIs under trust', () => {
 	test('Claude Code (hq): managed settings pin enableAllProjectMcpServers=false, root-owned, readable', () => {
 		assert.deepEqual(JSON.parse(read('hq', 'claude-code', 'managed-settings.json')), { enableAllProjectMcpServers: false });
 		assert.match(dockerfile, /^COPY --chown=root:root --chmod=0644 claude-code\/managed-settings\.json \/etc\/claude-code\/managed-settings\.json$/m);
+		assert.ok(dockerfile.indexOf('RUN install -d -m 0755 /etc/claude-code') > 0, 'the directory is made 0755 first');
+		assert.ok(dockerfile.indexOf('RUN install -d -m 0755 /etc/claude-code') < dockerfile.indexOf('/etc/claude-code/managed-settings.json\n'));
 	});
 	test('Gemini CLI (hq-agents): the system settings file pins folder trust on', () => {
 		assert.equal(JSON.parse(read('hq-agents', 'gemini-cli', 'settings.json')).security.folderTrust.enabled, true);
-		assert.match(agents, /^COPY --chown=root:root --chmod=0644 gemini-cli\/settings\.json \/etc\/gemini-cli\/settings\.json$/m);
+		assert.match(agents, /^RUN install -d -m 0755 \/etc\/gemini-cli\nCOPY --chown=root:root --chmod=0644 gemini-cli\/settings\.json \/etc\/gemini-cli\/settings\.json$/m);
 	});
 	test('Codex (hq-agents): nothing in the image marks a project trusted', () => {
 		const all = [dockerfile, agents, read('hq', 'entrypoint.sh'), read('hq', 'new-workspace.sh')].join('\n');
@@ -90,5 +92,18 @@ describe('R2.7: agent CLIs under trust', () => {
 		const section = r.slice(r.indexOf('## Agents and trust'));
 		assert.ok(r.includes('## Agents and trust'));
 		for (const w of ['Claude Code', 'Codex', 'Gemini CLI', 'Antigravity', 'claude -p', 'gap']) assert.ok(section.includes(w), w);
+	});
+});
+
+describe('a volume mounted below /workspaces', () => {
+	test('each mount point under /workspaces is handed to node before anything runs as node: the point only, never via a symlink, a read-only one tolerated', () => {
+		const raw = read('hq', 'entrypoint.sh');
+		const loop = raw.slice(raw.indexOf('while IFS= read -r m; do'), raw.indexOf("done < <(findmnt -rn -o TARGET"));
+		assert.ok(loop.length > 50, 'the loop over findmnt');
+		assert.match(loop, /case "\$m" in \/workspaces\/\?\*\) ;; \*\) continue ;; esac/);
+		assert.match(loop, /\[ ! -L "\$m" \]/);
+		assert.match(loop, /chown -h node:node "\$m" 2>\/dev\/null \|\| log /);
+		assert.doesNotMatch(loop, /chown -R/);
+		assert.ok(raw.indexOf("done < <(findmnt -rn -o TARGET") < raw.indexOf('"${AS_NODE[@]}" /usr/local/bin/dt-entrypoint --prepare'));
 	});
 });

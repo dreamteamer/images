@@ -251,6 +251,19 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 				await docker(['rm', '-f', name]);
 			});
 		});
+		test('a volume at /workspaces/<name> (what dt start container mounts) comes up root-owned and is handed to node; a read-only one beside it does not stop the start', async () => {
+			const name = `dt-ct-submount-${process.pid}`;
+			const ws = `dt-ct-sub-ws-${process.pid}`, ro = `dt-ct-sub-ro-${process.pid}`;
+			vols.add(ws); vols.add(ro);
+			await run(name, ['-e', 'DT_WORKSPACE=ct', '-v', `${ws}:/workspaces/ct`, '-v', `${ro}:/workspaces/ref:ro`]);
+			await waitHealthy(name);
+			assert.equal((await execIn(name, 'stat -c %U /workspaces/ct')).out.trim(), 'node');
+			assert.equal((await execIn(name, 'test -f /workspaces/ct/package.json && test -d /workspaces/ct/.dreamteamer && echo laid-down')).out.trim(), 'laid-down');
+			assert.equal((await execIn(name, 'stat -c %U /workspaces/ref')).out.trim(), 'root');
+			const logs = await docker(['logs', name]);
+			assert.match(logs.err, /left \/workspaces\/ref as it is/);
+			await docker(['rm', '-f', name]);
+		});
 		test('DT_LOCAL_AUTH=off serves without a token, and says so loudly', async () => {
 			const name = `dt-ct-noauth-${process.pid}`;
 			await run(name, ['-e', 'DT_WORKSPACE=ct', '-e', 'DT_LOCAL_BIND=0.0.0.0', '-e', 'DT_LOCAL_AUTH=off', '-p', '127.0.0.1::8080']);
@@ -390,7 +403,8 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 	});
 
 	test('R2.7 Claude Code: the managed settings are in place and parse (enableAllProjectMcpServers=false)', async () => {
-		const r = await docker(['run', '--rm', '--entrypoint', 'bash', IMG, '-c', 'stat -c "%U %a" /etc/claude-code/managed-settings.json && cat /etc/claude-code/managed-settings.json'], { timeout: 60_000 });
+		// read as node: an unreadable managed file stops a signed-in Claude Code at startup
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', IMG, '-c', 'stat -c "%U %a" /etc/claude-code/managed-settings.json && cat /etc/claude-code/managed-settings.json'], { timeout: 60_000 });
 		assert.equal(r.code, 0, r.err);
 		const [stat, ...json] = r.out.split('\n');
 		assert.equal(stat, 'root 644');
@@ -402,7 +416,7 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 const AGENTS = process.env.HQ_AGENTS_IMAGE;
 describe('the built hq-agents image', { skip: !AGENTS && 'set HQ_AGENTS_IMAGE=<image ref> to run against a built hq-agents' }, () => {
 	test('R2.7 Gemini CLI: folder trust is pinned on in the system settings file', async () => {
-		const r = await docker(['run', '--rm', '--entrypoint', 'bash', AGENTS, '-c', 'cat /etc/gemini-cli/settings.json'], { timeout: 60_000 });
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', AGENTS, '-c', 'cat /etc/gemini-cli/settings.json'], { timeout: 60_000 });
 		assert.equal(r.code, 0, r.err);
 		assert.equal(JSON.parse(r.out).security.folderTrust.enabled, true);
 	});
@@ -411,7 +425,7 @@ describe('the built hq-agents image', { skip: !AGENTS && 'set HQ_AGENTS_IMAGE=<i
 		assert.equal(r.out.trim(), '0');
 	});
 	test('R2.7 Claude Code: the managed settings travel into hq-agents', async () => {
-		const r = await docker(['run', '--rm', '--entrypoint', 'bash', AGENTS, '-c', 'cat /etc/claude-code/managed-settings.json'], { timeout: 60_000 });
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', AGENTS, '-c', 'cat /etc/claude-code/managed-settings.json'], { timeout: 60_000 });
 		assert.equal(JSON.parse(r.out).enableAllProjectMcpServers, false);
 	});
 });

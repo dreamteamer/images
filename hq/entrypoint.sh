@@ -162,6 +162,16 @@ if [ "$MODE" = hosted ]; then apply_egress ; fi
 for d in /workspaces /files; do
   if [ -d "$d" ] && [ "$(stat -c %u "$d")" != "$(id -u node)" ]; then chown node:node "$d"; fi
 done
+# A volume mounted BELOW /workspaces (`dt start container` mounts one at /workspaces/<name>) comes up owned
+# by root when the image has nothing at that path. Each such mount point is handed to node too — the mount
+# point only, never its contents, never through a symlink — and a read-only one is left as it is.
+while IFS= read -r m; do
+  m=$(printf '%b' "$m")   # findmnt -r escapes spaces and the like as \xNN
+  case "$m" in /workspaces/?*) ;; *) continue ;; esac
+  if [ -d "$m" ] && [ ! -L "$m" ] && [ "$(stat -c %u "$m")" != "$(id -u node)" ]; then
+    chown -h node:node "$m" 2>/dev/null || log "left $m as it is (read-only?): node cannot write there"
+  fi
+done < <(findmnt -rn -o TARGET 2>/dev/null || true)
 
 # DISABLE_AUTOUPDATER: the home persists now, so a CLI that updated itself there would outlive every image
 # release; the image pins Claude Code's version instead.

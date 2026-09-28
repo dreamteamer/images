@@ -29,6 +29,8 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
 # servers), .env and custom commands are ignored. Codex needs no switch: it loads a project's .codex/ layers
 # (config.toml and its MCP servers, hooks, rules) only once the project is trusted, and this image trusts no
 # path. Antigravity (agy) asks before it opens a folder but offers no image-wide setting: see the README.
+# the directory first, 0755: a COPY --chmod would give it the file's 0644, which no user but root can enter
+RUN install -d -m 0755 /etc/gemini-cli
 COPY --chown=root:root --chmod=0644 gemini-cli/settings.json /etc/gemini-cli/settings.json
 # strip whatever setuid/setgid bits the installs above added, as hq does
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +

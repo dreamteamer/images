@@ -86,6 +86,8 @@ RUN mkdir -p /opt/dt-launcher && printf '%s\n' \
 # What this image can do, one word per line, for the engine to read before it relies on it (url-token: the
 # local-mode URL token behind dt-url-token).
 RUN mkdir -p /opt/dt-image && printf '%s\n' url-token > /opt/dt-image/features && chmod 0644 /opt/dt-image/features
+# made here, 0755: a COPY --chmod would give a directory it creates the file's mode, 0644, which node cannot enter
+RUN install -d -m 0755 /etc/claude-code
 RUN mkdir -p /opt/dt-template /workspaces /files && chown -R node:node /opt/dt-template /workspaces /files
 USER node
 # The workspace template, built ONCE here: init, the hq bundle trimmed to its modules, compile.
