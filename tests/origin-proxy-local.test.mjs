@@ -28,9 +28,9 @@ async function freePort() {
 	await new Promise((r) => probe.close(r));
 	return port;
 }
-function request(port, urlPath, headers = {}) {
+function request(port, urlPath, headers = {}, method = 'GET') {
 	return new Promise((resolve, reject) => {
-		const req = http.request({ host: '127.0.0.1', port, path: urlPath, headers: { host: `localhost:${port}`, ...headers } }, (res) => {
+		const req = http.request({ host: '127.0.0.1', port, method, path: urlPath, headers: { host: `localhost:${port}`, ...headers } }, (res) => {
 			let body = '';
 			res.on('data', (c) => (body += c));
 			res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
@@ -198,9 +198,10 @@ describe('the local proxy', () => {
 		assert.match(noHost, /^HTTP\/1\.[01] 403/, 'no Host header at all');
 	});
 	test('a WebSocket upgrade needs the cookie and a local Host, then is tunnelled without the cookie', async () => {
-		assert.match(await upgrade(p.port, ''), /^HTTP\/1\.1 401/);
-		assert.match(await upgrade(p.port, `Cookie: dt_local_${p.port}=${TOKEN_B}\r\n`), /^HTTP\/1\.1 401/);
-		const ok = await upgrade(p.port, `Cookie: dt_local_${p.port}=${TOKEN_A}\r\n`);
+		const same = `Origin: http://localhost:${p.port}\r\n`;
+		assert.match(await upgrade(p.port, same), /^HTTP\/1\.1 401/);
+		assert.match(await upgrade(p.port, `${same}Cookie: dt_local_${p.port}=${TOKEN_B}\r\n`), /^HTTP\/1\.1 401/);
+		const ok = await upgrade(p.port, `Cookie: dt_local_${p.port}=${TOKEN_A}\r\nOrigin: http://localhost:${p.port}\r\n`);
 		assert.match(ok, /^HTTP\/1\.1 101/);
 		assert.match(ok, /echo:ping/);
 		assert.equal(seen.at(-1).upgrade, true);
@@ -212,6 +213,39 @@ describe('the local proxy', () => {
 			s.on('error', reject);
 		});
 		assert.match(rebound, /^HTTP\/1\.1 403/);
+	});
+	test('cross-site WebSocket hijacking: an upgrade with the cookie still needs an Origin naming this exact host and port', async () => {
+		const c = `Cookie: dt_local_${p.port}=${TOKEN_A}\r\n`;
+		const n = seen.length;
+		// another localhost port is SAME-SITE, so the SameSite=Strict cookie rides along; Origin is what differs
+		for (const origin of ['', `Origin: http://localhost:${p.port + 1}\r\n`, `Origin: http://127.0.0.1:${p.port}\r\n`, `Origin: https://localhost:${p.port}\r\n`, 'Origin: null\r\n', `Origin: http://evil.test\r\n`]) {
+			assert.match(await upgrade(p.port, c + origin), /^HTTP\/1\.1 403/, JSON.stringify(origin));
+		}
+		assert.equal(seen.length, n, 'nothing reached the editor');
+		assert.match(await upgrade(p.port, `${c}Origin: HTTP://LOCALHOST:${p.port}\r\n`), /^HTTP\/1\.1 101/, 'scheme and host compare without case');
+	});
+	test('every request that is not GET/HEAD needs a same-origin Origin; a GET or HEAD without one (a navigation) passes', async () => {
+		const c = cookie(p.port, TOKEN_A);
+		const n = seen.length;
+		for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
+			assert.equal((await request(p.port, '/x', c, method)).status, 403, `${method}, no Origin`);
+			assert.equal((await request(p.port, '/x', { ...c, origin: `http://localhost:${p.port + 1}` }, method)).status, 403, `${method}, another port`);
+		}
+		assert.equal((await request(p.port, `/?tkn=${TOKEN_A}`, { origin: `http://localhost:${p.port + 1}` }, 'POST')).status, 403, 'a cross-origin ?tkn= never sets the cookie');
+		assert.equal(seen.length, n, 'nothing reached the editor');
+		assert.equal((await request(p.port, '/x', { ...c, origin: `http://localhost:${p.port}` }, 'POST')).status, 200);
+		assert.equal((await request(p.port, '/x', c, 'GET')).status, 200);
+		assert.equal((await request(p.port, '/x', c, 'HEAD')).status, 200);
+		// a GET that DOES carry a foreign Origin is a cross-origin fetch, never a navigation
+		assert.equal((await request(p.port, '/x', { ...c, origin: `http://localhost:${p.port + 1}` }, 'GET')).status, 403);
+	});
+	test('the Origin check holds with DT_LOCAL_AUTH=off too: it is not the token check', async () => {
+		const q = await startLocal({ DT_LOCAL_AUTH: 'off', DT_URL_TOKEN_FILE: path.join(dir, 'absent') });
+		try {
+			assert.equal((await request(q.port, '/x', {}, 'POST')).status, 403);
+			assert.match(await upgrade(q.port, `Origin: http://localhost:${q.port + 1}\r\n`), /^HTTP\/1\.1 403/);
+			assert.match(await upgrade(q.port, `Origin: http://localhost:${q.port}\r\n`), /^HTTP\/1\.1 101/);
+		} finally { q.child.kill(); }
 	});
 	test('rotation takes effect without a restart: the old cookie is refused, the new token works', async () => {
 		assert.equal((await request(p.port, '/', cookie(p.port, TOKEN_A))).status, 200);

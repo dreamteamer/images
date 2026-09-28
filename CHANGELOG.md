@@ -30,6 +30,11 @@
 - **Security review fixes (local mode):**
   - `/healthz` answers only a local `Host` (403 otherwise), so a page on another site cannot probe
     localhost ports to learn that a machine is running. The engine's probe sends `127.0.0.1:<port>`.
+  - A WebSocket upgrade, and every request that is not `GET`/`HEAD`, must carry an `Origin` naming exactly
+    the request's `Host` (`http://localhost:<port>`), else 403. Every localhost port is the same site, so
+    `SameSite=Strict` let a page on another local port send the cookie with its fetches and WebSockets
+    (cross-site WebSocket hijacking). A `GET` without an `Origin` (a navigation) still passes. The check
+    holds with `DT_LOCAL_AUTH=off` too.
 - **Breaking:** a non-root start (`-u node`) has no proxy and so no token, and now refuses
   `DT_LOCAL_BIND=0.0.0.0` unless `DT_LOCAL_AUTH=off`.
 

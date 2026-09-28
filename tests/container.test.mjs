@@ -237,6 +237,9 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 				const via = await get('/', { cookie: c.split(';')[0] });
 				assert.ok(reached(via), `${via.status} ${via.headers.get('location')}`);
 				assert.equal((await get('/?folder=/opt/dt-launcher', { cookie: c.split(';')[0] })).status, 200);
+				// another localhost port is the same site: the cookie rides along, the Origin does not match
+				assert.equal((await get('/', { cookie: c.split(';')[0], origin: `http://localhost:${Number(port) + 1}` })).status, 403);
+				assert.equal((await get('/', { cookie: c.split(';')[0], connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', origin: `http://localhost:${Number(port) + 1}` })).status, 403, 'a cross-origin upgrade is refused before any 101');
 			});
 			test('rotate: the old cookie is refused at once, the new token opens it, and it survives a restart', async () => {
 				const old = await token();

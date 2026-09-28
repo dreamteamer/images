@@ -23,6 +23,8 @@
 //   GET <any path>?tkn=<token>  → 302 to the same URL without tkn, setting the session cookie
 //   everything else (HTTP and WebSocket) needs the cookie, else 401
 //   Host must be localhost, 127.0.0.1 or [::1] (any port), else 403 — DNS rebinding; /healthz included
+//   a WebSocket upgrade and every non-GET/HEAD request need an Origin naming exactly this Host, else 403:
+//   another localhost port is the same site, so SameSite=Strict alone lets its pages send the cookie
 //   /healthz needs no token, and says nothing but 200/503
 // The cookie is named per host port (dt_local_<port>): cookies are not port-scoped, so two machines on
 // localhost:8100 and localhost:8101 would otherwise overwrite each other's. DT_LOCAL_AUTH=off drops the
@@ -248,9 +250,24 @@ const FOREIGN_HOST = { status: 403, body: 'forbidden: this machine answers only 
 /** True when the Host header names this computer: localhost, 127.0.0.1 or [::1], any port. */
 export function isLocalHost(host) { return LOCAL_HOSTS.has(localHostName(host)); }
 
+const CROSS_ORIGIN = { status: 403, body: 'forbidden: a request from another origin\n' };
+/**
+ * True when the request may come from a page that is not this machine's own. Every localhost port is
+ * the SAME SITE, so a page on localhost:<other> gets the SameSite=Strict cookie sent along with its
+ * fetches and WebSockets; the Origin header is what tells them apart. A WebSocket upgrade and every
+ * method but GET/HEAD must carry an Origin naming exactly this Host (scheme http, same host, same port);
+ * a GET/HEAD without one is a navigation and passes, and one WITH a foreign Origin is a cross-origin fetch.
+ */
+export function crossOrigin(req, { upgrade = false } = {}) {
+  const origin = req.headers.origin;
+  if (origin === undefined) return upgrade || !['GET', 'HEAD'].includes(req.method);
+  return String(origin).toLowerCase() !== `http://${String(req.headers.host ?? '').toLowerCase()}`;
+}
+
 /** Decides one local request: { status, … } to answer, or { forward: true } to pass on. Pure but for readToken. */
-export function localDecision(req, { readToken, auth = true }) {
+export function localDecision(req, { readToken, auth = true, upgrade = false }) {
   if (!isLocalHost(req.headers.host)) return FOREIGN_HOST;
+  if (crossOrigin(req, { upgrade })) return CROSS_ORIGIN;
   const raw = String(req.url ?? '/');
   const q = raw.indexOf('?');
   const params = new URLSearchParams(q < 0 ? '' : raw.slice(q + 1));
@@ -287,7 +304,7 @@ export function createLocalProxy({ tokenFile, readToken = tokenReader(tokenFile)
     forward(req, res, headers, editorPort);
   });
   server.on('upgrade', (req, socket, head) => {
-    const d = localDecision(req, { readToken, auth });
+    const d = localDecision(req, { readToken, auth, upgrade: true });
     if (!d.forward) {
       const status = d.status === 403 ? 403 : 401; // a ?tkn= upgrade is refused too: the cookie is set by a page load
       socket.write(`HTTP/1.1 ${status} ${status === 403 ? 'Forbidden' : 'Unauthorized'}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n${status === 403 ? 'forbidden' : 'unauthorized'}\r\n`);
