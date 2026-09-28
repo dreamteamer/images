@@ -41,6 +41,13 @@
     `SameSite=Strict` let a page on another local port send the cookie with its fetches and WebSockets
     (cross-site WebSocket hijacking). A `GET` without an `Origin` (a navigation) still passes. The check
     holds with `DT_LOCAL_AUTH=off` too.
+- **`claude -p` under trust.** Measured on Claude Code 2.1.281: `claude -p` in an untrusted cloned
+  repository ran its `.claude/settings.json` hooks and started its `.mcp.json` servers, logged in or not.
+  `claude` on PATH is now a front for the npm binary: a non-interactive run in a folder that
+  `~/.claude.json` does not trust gets `--setting-sources user`, which skips the folder's settings, hooks,
+  `.mcp.json` servers, `CLAUDE.md` and skills (measured against a fixture; `--safe-mode` would also drop the
+  user's own). Interactive sessions are unchanged. The Agent SDK and the editor extension do not go through
+  the front (README, Agents and trust).
 - **Breaking:** a non-root start (`-u node`) has no proxy and so no token, and now refuses
   `DT_LOCAL_BIND=0.0.0.0` unless `DT_LOCAL_AUTH=off`.
 

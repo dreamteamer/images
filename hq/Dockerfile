@@ -65,8 +65,12 @@ RUN case "${TARGETARCH}" in \
  && rm -f "/tmp/${deb}"
 # The origin proxy's own user: the workspace user (node) can neither signal nor ptrace it.
 RUN useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin dtproxy
+# `claude` on PATH is the image's front (claude-code/claude.sh, below), not npm's link to the binary.
 RUN npm install -g --no-audit --no-fund dreamteamer@${DT_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION} \
- && npm cache clean --force
+ && npm cache clean --force \
+ && test -x /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
+ && rm /usr/local/bin/claude \
+ && install -d -m 0755 /usr/local/lib/dt
 # Extensions live OUTSIDE the home volume, so a fresh /home/node on first start still has them.
 COPY --from=launcher /dt-machine.vsix /tmp/dt-machine.vsix
 RUN mkdir -p /opt/code-server/extensions \
@@ -114,6 +118,10 @@ COPY --chown=root:root --chmod=0755 url-token.sh /usr/local/bin/dt-url-token
 # own .mcp.json approvals already wait for the trust dialog; enableAllProjectMcpServers=false here also stops
 # a user-level true from approving every repository's servers. The gaps are in the README (Agents and trust).
 COPY --chown=root:root --chmod=0644 claude-code/managed-settings.json /etc/claude-code/managed-settings.json
+# A non-interactive run (claude -p) never shows the trust dialog, and would run an untrusted folder's hooks
+# and .mcp.json servers; the front adds --setting-sources user there until the folder is trusted.
+COPY --chown=root:root --chmod=0755 claude-code/claude.sh /usr/local/bin/claude
+COPY --chown=root:root --chmod=0644 claude-code/trust.mjs /usr/local/lib/dt/claude-trust.mjs
 WORKDIR /workspaces
 EXPOSE 8080
 # root: the entrypoint applies the egress policy, chowns a freshly attached volume, and stays as a small

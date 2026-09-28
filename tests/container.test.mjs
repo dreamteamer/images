@@ -456,6 +456,28 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 		await docker(['rm', '-f', name]);
 	});
 
+	test('claude -p in an untrusted cloned repository runs neither its hooks nor its .mcp.json servers; once trusted it does', async () => {
+		// the review's fixture: a SessionStart hook and an MCP server that each leave a marker. No login and no
+		// API: the base URL is a closed port, and the hook and the server start before the first request.
+		const script = String.raw`
+set -u
+export ANTHROPIC_BASE_URL=http://127.0.0.1:9 ANTHROPIC_API_KEY=fixture-not-a-key
+mkdir -p /tmp/w/fx/.claude ~/.claude && cd /tmp/w/fx && git init -q .
+echo '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch /tmp/marker-hook"}]}]}}' > .claude/settings.json
+echo '{"mcpServers":{"fx":{"command":"sh","args":["-c","touch /tmp/marker-mcp; sleep 20"]}}}' > .mcp.json
+echo '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch /tmp/marker-userhook"}]}]}}' > ~/.claude/settings.json
+markers() { sleep 2; for m in hook mcp userhook; do [ -e /tmp/marker-$m ] && printf '%s=Y ' $m || printf '%s=n ' $m; done; echo; rm -f /tmp/marker-*; }
+echo "front: $(command -v claude) $(head -c 11 "$(command -v claude)")"
+timeout 60 claude -p hi </dev/null >/dev/null 2>/tmp/err; echo "untrusted: $(markers)"; grep -c 'is not trusted' /tmp/err
+node -e 'require("fs").writeFileSync(process.env.HOME + "/.claude.json", JSON.stringify({ projects: { "/tmp/w/fx": { hasTrustDialogAccepted: true } } }))'
+timeout 60 claude -p hi </dev/null >/dev/null 2>/tmp/err; echo "trusted: $(markers)"; grep -c 'is not trusted' /tmp/err
+`;
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', IMG, '-c', script], { timeout: 180_000 });
+		assert.match(r.out, /^front: \/usr\/local\/bin\/claude #!\/bin\/bash$/m);
+		assert.match(r.out, /^untrusted: hook=n mcp=n userhook=Y $/m, 'the user\'s own settings still apply');
+		assert.match(r.out, /^trusted: hook=Y mcp=Y userhook=Y $/m);
+		assert.deepEqual(r.out.match(/^\d+$/gm), ['1', '0'], 'the notice is said once, and only when untrusted');
+	});
 	test('R2.7 Claude Code: the managed settings are in place and parse (enableAllProjectMcpServers=false)', async () => {
 		// read as node: an unreadable managed file stops a signed-in Claude Code at startup
 		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', IMG, '-c', 'stat -c "%U %a" /etc/claude-code/managed-settings.json && cat /etc/claude-code/managed-settings.json'], { timeout: 60_000 });
