@@ -486,6 +486,11 @@ timeout 60 claude -p hi </dev/null >/dev/null 2>/tmp/err; echo "trusted: $(marke
 		for (const ext of want) assert.ok(have.includes(ext.toLowerCase()), `${ext} not in ${have.join(', ')}`);
 		assert.match(want.join(' '), /@\d+\.\d+\.\d+.*@\d+\.\d+\.\d+/, 'the ARGs were substituted');
 	});
+	test('no symlink under the mount roots (a mount target lexically under /workspaces must not land somewhere else)', async () => {
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', IMG, '-c', 'for d in /workspaces /mnt /home/node /files; do [ -L "$d" ] && echo "LINK $d"; [ -d "$d" ] && find "$d" -xdev -type l; done; echo end'], { timeout: 60_000 });
+		assert.equal(r.code, 0, r.err);
+		assert.equal(r.out, 'end\n');
+	});
 	test('R2.7 Claude Code: the managed settings are in place and parse (enableAllProjectMcpServers=false)', async () => {
 		// read as node: an unreadable managed file stops a signed-in Claude Code at startup
 		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', IMG, '-c', 'stat -c "%U %a" /etc/claude-code/managed-settings.json && cat /etc/claude-code/managed-settings.json'], { timeout: 60_000 });
