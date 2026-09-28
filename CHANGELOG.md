@@ -30,6 +30,12 @@
 - **Security review fixes (local mode):**
   - `/healthz` answers only a local `Host` (403 otherwise), so a page on another site cannot probe
     localhost ports to learn that a machine is running. The engine's probe sends `127.0.0.1:<port>`.
+  - **Isolation between local containers.** A bridge network per container does not isolate on Docker
+    Desktop (measured on 29.3.1: from container A, B's container IP and `host.docker.internal:<B's
+    published port>` both reached B). With `CAP_NET_ADMIN` the entrypoint now applies `dt-local-egress`, an
+    nft policy for `node` only: no new connection to private, CGNAT or link-local IPv4, IPv6 ULA or
+    link-local, or the host gateways resolved at start; DNS, loopback and the internet stay open.
+    `DT_LOCAL_EGRESS=open` skips it, loudly. Without `CAP_NET_ADMIN` the start goes on with a warning.
   - A WebSocket upgrade, and every request that is not `GET`/`HEAD`, must carry an `Origin` naming exactly
     the request's `Host` (`http://localhost:<port>`), else 403. Every localhost port is the same site, so
     `SameSite=Strict` let a page on another local port send the cookie with its fetches and WebSockets

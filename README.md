@@ -80,7 +80,10 @@ editor just by knowing the port:
   `dt_local_<port>`: cookies are not port-scoped, so two machines on `localhost` keep separate ones.
 - The `Host` header must be `localhost`, `127.0.0.1` or `[::1]` (any port), else 403: a DNS-rebinding page
   cannot reach it through a name of its own.
-- `/healthz` needs no token and returns only 200 or 503.
+- A WebSocket upgrade, and every request that is not `GET`/`HEAD`, must carry an `Origin` naming exactly
+  the `Host` (`http://localhost:<port>`), else 403. Every localhost port is the same site, so the
+  `SameSite=Strict` cookie alone would ride along with a page on another local port.
+- `/healthz` needs no token but does need a local `Host`, and returns only 200 or 503.
 - `dt-url-token show` prints the token; `dt-url-token rotate` writes a new one atomically and prints it.
   Both run only as root (`docker exec -u root <container> dt-url-token show`). The proxy re-reads the
   file when its mtime changes, so after a rotation every old cookie gets 401 on its next request.
@@ -93,6 +96,20 @@ editor just by knowing the port:
 docker run -d -p 127.0.0.1:8100:8080 -e DT_LOCAL_BIND=0.0.0.0 --name hq-dana ghcr.io/dreamteamer/hq:0.6.0
 docker exec -u root hq-dana dt-url-token show     # → open http://localhost:8100/?tkn=<that>
 ```
+
+**Isolation between containers.** A bridge network per container does not isolate on Docker Desktop:
+another container's IP, and its published port through `host.docker.internal`, both answer. So with
+`CAP_NET_ADMIN` (which `dt start container` adds) the entrypoint applies `dt-local-egress`, an nft policy
+for the workspace user `node` only: no new connection to private, CGNAT or link-local IPv4 (`10/8`,
+`172.16/12`, `192.168/16`, `100.64/10`, `169.254/16`), IPv6 ULA or link-local, or the host gateways
+(`host.docker.internal`, `gateway.docker.internal` and the default gateway, resolved at start). The
+resolvers in `/etc/resolv.conf` on port 53, loopback and the internet stay open. Root and `dtproxy` are not
+filtered; the proxy only listens.
+
+- `DT_LOCAL_EGRESS=open` skips the policy and logs a warning. Use it to reach something on this computer or
+  its LAN, such as a database on the laptop or a git server on a private address.
+- Without `CAP_NET_ADMIN` (an engine older than 0.6's), the container starts anyway and logs that local
+  isolation is off. Hosted mode still refuses to start without it.
 
 Started as a non-root user (`docker run -u node`), there is no supervisor and no proxy, so there is no
 token: the container serves code-server on loopback only, and refuses `DT_LOCAL_BIND=0.0.0.0` unless

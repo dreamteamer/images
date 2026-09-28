@@ -11,7 +11,9 @@
 #                    container` passes (the host side of the mapping is loopback already). The proxy asks
 #                    for the URL token (dt-url-token, /home/node/.dt/url-token, written here on first start):
 #                    `?tkn=` once, then a cookie; a Host that is not localhost is refused. DT_LOCAL_AUTH=off
-#                    drops the URL token check, loudly; debugging only.
+#                    drops the URL token check, loudly; debugging only. With CAP_NET_ADMIN, node may not
+#                    connect to private ranges or the host gateways (dt-local-egress; DT_LOCAL_EGRESS=open
+#                    is the loud opt-out); without it, a loud warning and no isolation.
 #   hosted           behind the dreamteamer gateway. Refuses to start unless DT_GATEWAY_PUBLIC_KEY (or
 #                    DT_GATEWAY_PUBLIC_KEYS) imports and DT_ORIGIN_HOST is set; applies the egress policy
 #                    (/etc/dt/egress.nft + a tc bandwidth cap; failure is fatal, DT_EGRESS_POLICY=off is
@@ -156,6 +158,34 @@ apply_egress() {
   log "egress policy applied: /etc/dt/egress.nft, ${mbit} Mbit/s on $dev"
 }
 if [ "$MODE" = hosted ]; then apply_egress ; fi
+
+# Local: a per-container bridge does not isolate on Docker Desktop (another container's IP, and its published
+# port through host.docker.internal, both answer), so node may not open a connection to a private range or a
+# host gateway (dt-local-egress renders the ruleset; DNS and the internet stay open). Missing CAP_NET_ADMIN
+# (an engine older than the one that adds it) is a loud warning, not a stop: local mode keeps working.
+has_net_admin() {
+  local eff
+  eff=$(awk '/^CapEff:/ {print $2}' /proc/self/status)
+  [ -n "$eff" ] && (( (16#$eff >> 12) & 1 ))
+}
+apply_local_egress() {
+  local policy="${DT_LOCAL_EGRESS:-isolated}" ruleset
+  case "$policy" in
+    open)
+      log "⚠ ⚠ ⚠  DT_LOCAL_EGRESS=open — NO LOCAL ISOLATION: this workspace can reach other containers, the host and its LAN. Use it to reach a database on this computer."
+      return 0 ;;
+    isolated) ;;
+    *) die "DT_LOCAL_EGRESS must be isolated or open (got '$policy')" ;;
+  esac
+  if ! has_net_admin; then
+    log "⚠ ⚠ ⚠  no CAP_NET_ADMIN — LOCAL ISOLATION IS OFF: this workspace can reach other containers, the host and its LAN. Update dreamteamer (dt start container adds the capability)."
+    return 0
+  fi
+  ruleset=$(/usr/local/bin/node /usr/local/bin/dt-local-egress) || die "could not render the local egress policy (set DT_LOCAL_EGRESS=open to start without it)"
+  nft -f - <<<"$ruleset" || die "could not apply the local egress policy (set DT_LOCAL_EGRESS=open to start without it)"
+  log "local egress policy applied: no private ranges or host gateways for node; DNS and the internet open"
+}
+if [ "$MODE" = local ]; then apply_local_egress ; fi
 
 # A freshly attached volume (Fly, or any raw block device) mounts owned by root; a Docker named volume
 # inherits the image's ownership. Only the two fixed mount points are touched, never their contents.

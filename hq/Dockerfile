@@ -108,6 +108,7 @@ COPY --chown=root:root --chmod=0755 files-folder.sh /usr/local/bin/dt-files-fold
 COPY --chown=root:root --chmod=0755 new-workspace.sh /usr/local/bin/dt-new
 COPY --chown=root:root --chmod=0755 origin-proxy.mjs /usr/local/bin/dt-origin-proxy
 COPY --chown=root:root --chmod=0644 egress.nft /etc/dt/egress.nft
+COPY --chown=root:root --chmod=0755 local-egress.mjs /usr/local/bin/dt-local-egress
 COPY --chown=root:root --chmod=0755 url-token.sh /usr/local/bin/dt-url-token
 # Claude Code under trust, image-wide: managed settings, above every user and project file. A repository's
 # own .mcp.json approvals already wait for the trust dialog; enableAllProjectMcpServers=false here also stops

@@ -175,6 +175,9 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 			assert.match(r.out, /0100007F:1F90/);
 			assert.doesNotMatch(r.out, /^00000000:1F90$/m);
 			assert.doesNotMatch(r.out, /^0{32}:1F90$/m);
+			// no --cap-add NET_ADMIN (an engine older than 0.6's): the start goes on, and says isolation is off
+			const logs = await docker(['logs', name]);
+			assert.match(logs.err, /no CAP_NET_ADMIN — LOCAL ISOLATION IS OFF/);
 			await docker(['rm', '-f', name]);
 		});
 		test('DT_LOCAL_BIND=0.0.0.0 (what `dt start container` needs) serves the mapped port', async () => {
@@ -185,6 +188,52 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 			const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(5000) });
 			assert.equal(res.status, 200);
 			await docker(['rm', '-f', name]);
+		});
+		describe('isolation between local containers (0.6.0 security review): one bridge each does not isolate on Docker Desktop', () => {
+			const tag = process.pid;
+			const [a, b, c] = ['a', 'b', 'c'].map((x) => `dt-ct-iso-${x}-${tag}`);
+			const nets = [a, b, c].map((n) => `dreamteamer-${n}`);
+			let bip, bport;
+			// curl's exit code: 0 = an HTTP answer came back (B's proxy says 403 to a foreign Host: it was REACHED);
+			// 7 = could not connect (refused by the policy)
+			const probe = async (from, user, url) => (await execIn(from, `curl -s -o /dev/null --max-time 8 ${url}; echo $?`, user)).out.trim();
+			after(async () => { for (const n of nets) await docker(['network', 'rm', n]); });
+			test('three containers, each on its own labelled bridge, as `dt start container` makes them; B publishes 8080 on host loopback', async () => {
+				for (const [i, n] of nets.entries()) {
+					await docker(['network', 'rm', n]);
+					const r = await docker(['network', 'create', '--label', 'dreamteamer=1', '--label', `dreamteamer.name=${[a, b, c][i]}`, n]);
+					assert.equal(r.code, 0, r.err);
+				}
+				const common = ['--cap-add', 'NET_ADMIN', '-e', 'DT_WORKSPACE=ct', '-e', 'DT_LOCAL_BIND=0.0.0.0', '-p', '127.0.0.1::8080'];
+				await run(b, ['--network', nets[1], ...common]);
+				await run(a, ['--network', nets[0], ...common]);
+				await run(c, ['--network', nets[2], ...common, '-e', 'DT_LOCAL_EGRESS=open']);
+				for (const n of [b, a, c]) await waitHealthy(n);
+				bip = (await docker(['inspect', '-f', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}', b])).out.trim();
+				bport = (await docker(['port', b, '8080/tcp'])).out.trim().split('\n')[0].split(':').pop();
+				assert.match(bip, /^\d+\.\d+\.\d+\.\d+$/);
+				assert.match((await docker(['logs', a])).err, /local egress policy applied/);
+			});
+			test('as node, A cannot reach B by its container IP, nor its published port through host.docker.internal or gateway.docker.internal', async () => {
+				assert.equal(await probe(a, 'node', `http://${bip}:8080/healthz`), '7');
+				assert.equal(await probe(a, 'node', `http://host.docker.internal:${bport}/healthz`), '7');
+				assert.equal(await probe(a, 'node', `http://gateway.docker.internal:${bport}/healthz`), '7');
+				assert.match((await execIn(a, 'nft list table inet dt_local_egress')).out, /@blocked_v4 counter packets [1-9]/);
+			});
+			test('the internet and DNS stay open for node', async () => {
+				// registry.npmjs.org, not example.com: a first start already depends on reaching it
+				assert.equal(await probe(a, 'node', 'https://registry.npmjs.org/'), '0');
+			});
+			test('root in A is not filtered (the proxy and the supervisor only listen): the policy is node\'s', async () => {
+				assert.equal(await probe(a, 'root', `http://${bip}:8080/healthz`), '0');
+			});
+			test('DT_LOCAL_EGRESS=open restores reachability, and says so loudly', async () => {
+				assert.equal(await probe(c, 'node', `http://${bip}:8080/healthz`), '0');
+				assert.equal(await probe(c, 'node', `http://host.docker.internal:${bport}/healthz`), '0');
+				assert.match((await docker(['logs', c])).err, /DT_LOCAL_EGRESS=open — NO LOCAL ISOLATION/);
+				assert.notEqual((await execIn(c, 'nft list table inet dt_local_egress')).code, 0, 'no table at all');
+				for (const n of [a, b, c]) await docker(['rm', '-f', n]);
+			});
 		});
 		describe('the URL token (0.6.0)', () => {
 			const name = `dt-ct-token-${process.pid}`;
