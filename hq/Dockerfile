@@ -26,10 +26,16 @@ ARG DT_VERSION=0.28.0
 ARG EXT_VERSION=0.11.0
 ARG CLAUDE_VERSION=2.1.281
 ARG CODE_SERVER_VERSION=4.138.0
-# The two editor extensions, pinned (Open VSX, which code-server installs from). The Claude Code extension
-# follows the CLI's version; devcontainer.metadata below names the same two versions, literally.
+# The two editor extensions, pinned by version and by sha256 (the .vsix files Open VSX serves, checked like the
+# code-server .deb). The Claude Code extension follows the CLI's version and ships per platform;
+# devcontainer.metadata below is built from these same ARGs, so it cannot name another version.
 ARG CLAUDE_VSCODE_VERSION=2.1.281
 ARG DT_VSCODE_VERSION=0.18.2
+# sha256 of the Open VSX .vsix files for those versions: Anthropic.claude-code-<v>@linux-x64 / @linux-arm64, and
+# the universal dreamteamer.dreamteamer-vscode-<v> (downloaded and hashed 2026-09-28; they match Open VSX's .sha256)
+ARG CLAUDE_VSCODE_SHA256_AMD64=a57ccb27fd60df7254a2b00331fd04cef23b0d8da46c06529e4b6d3d8e5e90eb
+ARG CLAUDE_VSCODE_SHA256_ARM64=08428d46262cf06ae4a399d51926a70208f95a62c2ee19cc042f4e5c496b9a84
+ARG DT_VSCODE_SHA256=6fa726ca31c9064fdec4e67af351d412935191000277fc51ba7cbfda8b24b8c8
 # sha256 of code-server_${CODE_SERVER_VERSION}_<arch>.deb, from the v4.138.0 release's asset digests (read 2026-09-25)
 ARG CODE_SERVER_SHA256_AMD64=044eddb4871c9ab7e3a26e23bb472c8fbfedb2723fa2db7c964d903b491ff643
 ARG CODE_SERVER_SHA256_ARM64=a0f404035146ecbd596cc204300ea48f1e2ad6b7ed4c677291e82487a71dec40
@@ -45,7 +51,7 @@ LABEL dreamteamer.template="hq" \
 # (`dt open container <name> --vscode`), the Dev Containers extension reads this label and installs
 # these extensions into the container's VS Code Server — a second extension host beside code-server's,
 # over the same files — and runs as `node`, the user that owns the workspace.
-LABEL devcontainer.metadata='[{"remoteUser":"node","customizations":{"vscode":{"extensions":["dreamteamer.dreamteamer-vscode@0.18.2","anthropic.claude-code@2.1.281"],"settings":{"git.autofetch":true}}}}]'
+LABEL devcontainer.metadata="[{\"remoteUser\":\"node\",\"customizations\":{\"vscode\":{\"extensions\":[\"dreamteamer.dreamteamer-vscode@${DT_VSCODE_VERSION}\",\"anthropic.claude-code@${CLAUDE_VSCODE_VERSION}\"],\"settings\":{\"git.autofetch\":true}}}}]"
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 # nftables + iproute2: the hosted egress policy (entrypoint, root phase). Unpinned on purpose: the base
@@ -73,11 +79,19 @@ RUN npm install -g --no-audit --no-fund dreamteamer@${DT_VERSION} @anthropic-ai/
  && install -d -m 0755 /usr/local/lib/dt
 # Extensions live OUTSIDE the home volume, so a fresh /home/node on first start still has them.
 COPY --from=launcher /dt-machine.vsix /tmp/dt-machine.vsix
-RUN mkdir -p /opt/code-server/extensions \
- && code-server --extensions-dir /opt/code-server/extensions --install-extension "anthropic.claude-code@${CLAUDE_VSCODE_VERSION}" \
- && code-server --extensions-dir /opt/code-server/extensions --install-extension "dreamteamer.dreamteamer-vscode@${DT_VSCODE_VERSION}" \
+RUN case "${TARGETARCH}" in \
+      amd64) plat=linux-x64; csum="${CLAUDE_VSCODE_SHA256_AMD64}" ;; \
+      arm64) plat=linux-arm64; csum="${CLAUDE_VSCODE_SHA256_ARM64}" ;; \
+      *) echo "no pinned Claude Code extension sha256 for arch '${TARGETARCH}'" >&2; exit 1 ;; \
+    esac \
+ && fetch() { curl -fsSLo "$1" "$2" && echo "$3  $1" | sha256sum -c -; } \
+ && fetch /tmp/claude-code.vsix "https://open-vsx.org/api/Anthropic/claude-code/${plat}/${CLAUDE_VSCODE_VERSION}/file/Anthropic.claude-code-${CLAUDE_VSCODE_VERSION}@${plat}.vsix" "${csum}" \
+ && fetch /tmp/dreamteamer-vscode.vsix "https://open-vsx.org/api/dreamteamer/dreamteamer-vscode/${DT_VSCODE_VERSION}/file/dreamteamer.dreamteamer-vscode-${DT_VSCODE_VERSION}.vsix" "${DT_VSCODE_SHA256}" \
+ && mkdir -p /opt/code-server/extensions \
+ && code-server --extensions-dir /opt/code-server/extensions --install-extension /tmp/claude-code.vsix \
+ && code-server --extensions-dir /opt/code-server/extensions --install-extension /tmp/dreamteamer-vscode.vsix \
  && code-server --extensions-dir /opt/code-server/extensions --install-extension /tmp/dt-machine.vsix \
- && rm -f /tmp/dt-machine.vsix \
+ && rm -f /tmp/claude-code.vsix /tmp/dreamteamer-vscode.vsix /tmp/dt-machine.vsix \
  && chown -R node:node /opt/code-server
 # The machine's home window: a folder of its own (not /workspaces, so the home directory on the volume
 # is never in its Explorer or search, and trusting it trusts no workspace). Read-only.

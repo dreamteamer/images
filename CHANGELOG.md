@@ -19,8 +19,10 @@
   folder trust pinned on in `/etc/gemini-cli/settings.json`. Codex needs no setting, since it ignores an
   untrusted project's `.codex/`. The README's "Agents and trust" table lists what no setting covers
   (`claude -p` in an untrusted folder, Antigravity).
-- **Editor extensions pinned by version (R2.8):** `anthropic.claude-code@2.1.281` (the CLI's version) and
-  `dreamteamer.dreamteamer-vscode@0.18.2`, in code-server and in `devcontainer.metadata`.
+- **Editor extensions pinned by version and sha256 (R2.8):** `anthropic.claude-code@2.1.281` (the CLI's
+  version, per platform) and `dreamteamer.dreamteamer-vscode@0.18.2`. The `.vsix` files are downloaded from
+  Open VSX and checked with `sha256sum -c`, like the code-server `.deb`. `devcontainer.metadata` is built
+  from the same ARGs, so its versions cannot drift from the installed ones.
 - **A volume mounted below `/workspaces`** (`dt start container` mounts one at `/workspaces/<name>`) is
   root-owned when it first comes up. The entrypoint now gives each such mount point to `node` (the mount
   point only, never its contents, never through a symlink); a read-only one is logged and left alone.

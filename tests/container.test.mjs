@@ -478,6 +478,14 @@ timeout 60 claude -p hi </dev/null >/dev/null 2>/tmp/err; echo "trusted: $(marke
 		assert.match(r.out, /^trusted: hook=Y mcp=Y userhook=Y $/m);
 		assert.deepEqual(r.out.match(/^\d+$/gm), ['1', '0'], 'the notice is said once, and only when untrusted');
 	});
+	test('R2.8: the devcontainer.metadata label names exactly the extension versions installed in code-server', async () => {
+		const label = await docker(['image', 'inspect', '-f', '{{index .Config.Labels "devcontainer.metadata"}}', IMG]);
+		const want = JSON.parse(label.out)[0].customizations.vscode.extensions;
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', IMG, '-c', 'code-server --extensions-dir /opt/code-server/extensions --list-extensions --show-versions 2>/dev/null'], { timeout: 60_000 });
+		const have = r.out.trim().split('\n').map((l) => l.toLowerCase());
+		for (const ext of want) assert.ok(have.includes(ext.toLowerCase()), `${ext} not in ${have.join(', ')}`);
+		assert.match(want.join(' '), /@\d+\.\d+\.\d+.*@\d+\.\d+\.\d+/, 'the ARGs were substituted');
+	});
 	test('R2.7 Claude Code: the managed settings are in place and parse (enableAllProjectMcpServers=false)', async () => {
 		// read as node: an unreadable managed file stops a signed-in Claude Code at startup
 		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', IMG, '-c', 'stat -c "%U %a" /etc/claude-code/managed-settings.json && cat /etc/claude-code/managed-settings.json'], { timeout: 60_000 });

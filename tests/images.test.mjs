@@ -90,23 +90,35 @@ describe('what makes an image a template', () => {
 		assert.equal(label(d, 'template'), 'hq-agents');
 		assert.equal(label(d, 'agents'), 'claude,codex,gemini,agy');
 	});
-	test('the devcontainer.metadata label names both editor extensions, at the versions the image pins, and runs as node', () => {
+	test('the devcontainer.metadata label names both editor extensions through the SAME ARGs the install uses, and runs as node', () => {
 		const d = read('hq', 'Dockerfile');
-		const meta = JSON.parse(d.match(/devcontainer\.metadata='(\[.*\])'/)[1]);
-		assert.equal(meta[0].remoteUser, 'node');
+		const line = d.split('\n').find((l) => l.startsWith('LABEL devcontainer.metadata='));
+		assert.ok(line, 'the label is there');
+		assert.doesNotMatch(line, /@\d+\.\d+\.\d+/, 'no literal version in the label: it is derived, so it cannot drift');
 		const arg = (n) => d.match(new RegExp(`^ARG ${n}=(\\d+\\.\\d+\\.\\d+)$`, 'm'))?.[1];
+		// what docker makes of it: ${ARG} substituted inside the double quotes, \" unescaped
+		const value = line.match(/^LABEL devcontainer\.metadata="(.*)"$/)[1].replace(/\\"/g, '"').replace(/\$\{([A-Z_]+)\}/g, (_, n) => arg(n));
+		const meta = JSON.parse(value);
+		assert.equal(meta[0].remoteUser, 'node');
 		assert.deepEqual(meta[0].customizations.vscode.extensions, [`dreamteamer.dreamteamer-vscode@${arg('DT_VSCODE_VERSION')}`, `anthropic.claude-code@${arg('CLAUDE_VSCODE_VERSION')}`]);
 	});
-	test('R2.8: both editor extensions are pinned by version; the Claude Code extension follows the CLI', () => {
+	test('R2.8: both editor extensions are pinned by version AND sha256, like the code-server .deb; the Claude Code extension follows the CLI', () => {
 		const d = read('hq', 'Dockerfile');
 		for (const a of ['CLAUDE_VSCODE_VERSION', 'DT_VSCODE_VERSION']) assert.match(d, new RegExp(`^ARG ${a}=\\d+\\.\\d+\\.\\d+$`, 'm'), a);
+		for (const a of ['CLAUDE_VSCODE_SHA256_AMD64', 'CLAUDE_VSCODE_SHA256_ARM64', 'DT_VSCODE_SHA256']) assert.match(d, new RegExp(`^ARG ${a}=[0-9a-f]{64}$`, 'm'), a);
 		assert.equal(d.match(/^ARG CLAUDE_VSCODE_VERSION=(.*)$/m)[1], d.match(/^ARG CLAUDE_VERSION=(.*)$/m)[1]);
-		for (const l of d.split('\n').filter((l) => /--install-extension (?!\/)/.test(l))) assert.match(l, /--install-extension "[a-z-]+\.[a-z-]+@\$\{[A-Z_]+_VERSION\}"/, l);
+		// nothing is installed by name from the registry any more: every --install-extension is a checked local file
+		for (const l of d.split('\n').filter((l) => /--install-extension /.test(l))) assert.match(l, /--install-extension \/tmp\/[a-z-]+\.vsix/, l);
+		assert.match(d, /amd64\) plat=linux-x64; csum="\$\{CLAUDE_VSCODE_SHA256_AMD64\}"/);
+		assert.match(d, /arm64\) plat=linux-arm64; csum="\$\{CLAUDE_VSCODE_SHA256_ARM64\}"/);
+		assert.match(d, /fetch \/tmp\/claude-code\.vsix "https:\/\/open-vsx\.org\/api\/Anthropic\/claude-code\/\$\{plat\}\/\$\{CLAUDE_VSCODE_VERSION\}\/file\/Anthropic\.claude-code-\$\{CLAUDE_VSCODE_VERSION\}@\$\{plat\}\.vsix" "\$\{csum\}"/);
+		assert.match(d, /fetch \/tmp\/dreamteamer-vscode\.vsix "https:\/\/open-vsx\.org\/api\/dreamteamer\/dreamteamer-vscode\/\$\{DT_VSCODE_VERSION\}\/file\/dreamteamer\.dreamteamer-vscode-\$\{DT_VSCODE_VERSION\}\.vsix" "\$\{DT_VSCODE_SHA256\}"/);
+		assert.match(d, /fetch\(\) \{ curl -fsSLo "\$1" "\$2" && echo "\$3  \$1" \| sha256sum -c -; \}/);
 	});
 	test('both editor extensions are baked outside the home volume, the server reads that directory, and the template recommends them', () => {
 		const d = read('hq', 'Dockerfile'); const e = read('hq', 'entrypoint.sh');
-		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension "anthropic\.claude-code@\$\{CLAUDE_VSCODE_VERSION\}"/);
-		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension "dreamteamer\.dreamteamer-vscode@\$\{DT_VSCODE_VERSION\}"/);
+		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension \/tmp\/claude-code\.vsix/);
+		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension \/tmp\/dreamteamer-vscode\.vsix/);
 		// the machine launcher, packaged from hq/launcher in its own build stage
 		assert.match(d, /--extensions-dir \/opt\/code-server\/extensions --install-extension \/tmp\/dt-machine\.vsix/);
 		assert.match(d, /@vscode\/vsce@\d+\.\d+\.\d+ package/);
