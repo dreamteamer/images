@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 — 2026-09-30 — attested
+
+- **Release provenance a verifier can find.** Each pushed digest now also gets a GitHub build-provenance
+  attestation (`actions/attest-build-provenance`), beside the cosign signature and the buildx provenance.
+  `gh attestation verify oci://<ref> --repo dreamteamer/images` answered 404 for every earlier digest,
+  0.5.0 and 0.6.0 included, so a deploy gate that requires it refused them all. Image content is
+  unchanged from 0.6.0.
+
 ## 0.6.0 — 2026-09-28 — local mode behind a URL token; agents under trust
 
 - **Local mode runs behind the origin proxy.** The proxy runs as `dtproxy` on 8080 (bound to

@@ -50,6 +50,7 @@ jobs:
       contents: read
       packages: write     # push to ghcr (tags only)
       id-token: write     # cosign keyless (tags only)
+      attestations: write # GitHub build-provenance (tags only) — what dreamteamer-service's deploy gate verifies
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
@@ -120,6 +121,13 @@ jobs:
       - name: sign the digest (keyless, GitHub OIDC)
         if: github.ref_type == 'tag'
         run: cosign sign --yes "ghcr.io/dreamteamer/hq@${{ steps.push.outputs.digest }}"
+      - name: GitHub build-provenance attestation — the service's verify-image-ref.sh refuses a digest without one
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/dreamteamer/hq
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   hq-agents:
     needs: hq
@@ -130,6 +138,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -167,3 +176,9 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: sign the digest (keyless, GitHub OIDC)
         run: cosign sign --yes "ghcr.io/dreamteamer/hq-agents@${{ steps.push.outputs.digest }}"
+      - name: GitHub build-provenance attestation
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/dreamteamer/hq-agents
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
