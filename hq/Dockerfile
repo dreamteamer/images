@@ -26,6 +26,16 @@ ARG DT_VERSION=0.28.0
 ARG EXT_VERSION=0.11.0
 ARG CLAUDE_VERSION=2.1.281
 ARG CODE_SERVER_VERSION=4.138.0
+# The two editor extensions, pinned by version and by sha256 (the .vsix files Open VSX serves, checked like the
+# code-server .deb). The Claude Code extension follows the CLI's version and ships per platform;
+# devcontainer.metadata below is built from these same ARGs, so it cannot name another version.
+ARG CLAUDE_VSCODE_VERSION=2.1.281
+ARG DT_VSCODE_VERSION=0.18.2
+# sha256 of the Open VSX .vsix files for those versions: Anthropic.claude-code-<v>@linux-x64 / @linux-arm64, and
+# the universal dreamteamer.dreamteamer-vscode-<v> (downloaded and hashed 2026-09-28; they match Open VSX's .sha256)
+ARG CLAUDE_VSCODE_SHA256_AMD64=a57ccb27fd60df7254a2b00331fd04cef23b0d8da46c06529e4b6d3d8e5e90eb
+ARG CLAUDE_VSCODE_SHA256_ARM64=08428d46262cf06ae4a399d51926a70208f95a62c2ee19cc042f4e5c496b9a84
+ARG DT_VSCODE_SHA256=6fa726ca31c9064fdec4e67af351d412935191000277fc51ba7cbfda8b24b8c8
 # sha256 of code-server_${CODE_SERVER_VERSION}_<arch>.deb, from the v4.138.0 release's asset digests (read 2026-09-25)
 ARG CODE_SERVER_SHA256_AMD64=044eddb4871c9ab7e3a26e23bb472c8fbfedb2723fa2db7c964d903b491ff643
 ARG CODE_SERVER_SHA256_ARM64=a0f404035146ecbd596cc204300ea48f1e2ad6b7ed4c677291e82487a71dec40
@@ -41,7 +51,7 @@ LABEL dreamteamer.template="hq" \
 # (`dt open container <name> --vscode`), the Dev Containers extension reads this label and installs
 # these extensions into the container's VS Code Server — a second extension host beside code-server's,
 # over the same files — and runs as `node`, the user that owns the workspace.
-LABEL devcontainer.metadata='[{"remoteUser":"node","customizations":{"vscode":{"extensions":["dreamteamer.dreamteamer-vscode","anthropic.claude-code"],"settings":{"git.autofetch":true}}}}]'
+LABEL devcontainer.metadata="[{\"remoteUser\":\"node\",\"customizations\":{\"vscode\":{\"extensions\":[\"dreamteamer.dreamteamer-vscode@${DT_VSCODE_VERSION}\",\"anthropic.claude-code@${CLAUDE_VSCODE_VERSION}\"],\"settings\":{\"git.autofetch\":true}}}}]"
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 # nftables + iproute2: the hosted egress policy (entrypoint, root phase). Unpinned on purpose: the base
@@ -61,15 +71,27 @@ RUN case "${TARGETARCH}" in \
  && rm -f "/tmp/${deb}"
 # The origin proxy's own user: the workspace user (node) can neither signal nor ptrace it.
 RUN useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin dtproxy
+# `claude` on PATH is the image's front (claude-code/claude.sh, below), not npm's link to the binary.
 RUN npm install -g --no-audit --no-fund dreamteamer@${DT_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION} \
- && npm cache clean --force
+ && npm cache clean --force \
+ && test -x /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
+ && rm /usr/local/bin/claude \
+ && install -d -m 0755 /usr/local/lib/dt
 # Extensions live OUTSIDE the home volume, so a fresh /home/node on first start still has them.
 COPY --from=launcher /dt-machine.vsix /tmp/dt-machine.vsix
-RUN mkdir -p /opt/code-server/extensions \
- && code-server --extensions-dir /opt/code-server/extensions --install-extension anthropic.claude-code \
- && code-server --extensions-dir /opt/code-server/extensions --install-extension dreamteamer.dreamteamer-vscode \
+RUN case "${TARGETARCH}" in \
+      amd64) plat=linux-x64; csum="${CLAUDE_VSCODE_SHA256_AMD64}" ;; \
+      arm64) plat=linux-arm64; csum="${CLAUDE_VSCODE_SHA256_ARM64}" ;; \
+      *) echo "no pinned Claude Code extension sha256 for arch '${TARGETARCH}'" >&2; exit 1 ;; \
+    esac \
+ && fetch() { curl -fsSLo "$1" "$2" && echo "$3  $1" | sha256sum -c -; } \
+ && fetch /tmp/claude-code.vsix "https://open-vsx.org/api/Anthropic/claude-code/${plat}/${CLAUDE_VSCODE_VERSION}/file/Anthropic.claude-code-${CLAUDE_VSCODE_VERSION}@${plat}.vsix" "${csum}" \
+ && fetch /tmp/dreamteamer-vscode.vsix "https://open-vsx.org/api/dreamteamer/dreamteamer-vscode/${DT_VSCODE_VERSION}/file/dreamteamer.dreamteamer-vscode-${DT_VSCODE_VERSION}.vsix" "${DT_VSCODE_SHA256}" \
+ && mkdir -p /opt/code-server/extensions \
+ && code-server --extensions-dir /opt/code-server/extensions --install-extension /tmp/claude-code.vsix \
+ && code-server --extensions-dir /opt/code-server/extensions --install-extension /tmp/dreamteamer-vscode.vsix \
  && code-server --extensions-dir /opt/code-server/extensions --install-extension /tmp/dt-machine.vsix \
- && rm -f /tmp/dt-machine.vsix \
+ && rm -f /tmp/claude-code.vsix /tmp/dreamteamer-vscode.vsix /tmp/dt-machine.vsix \
  && chown -R node:node /opt/code-server
 # The machine's home window: a folder of its own (not /workspaces, so the home directory on the volume
 # is never in its Explorer or search, and trusting it trusts no workspace). Read-only.
@@ -79,6 +101,11 @@ RUN mkdir -p /opt/dt-launcher && printf '%s\n' \
   'make one from the dreamteamer template, or clone a repository. Start agents INSIDE a workspace, not here.' '' \
   'All workspaces on a machine share one home and one set of logins (git, Claude, Codex). Keep work that' \
   'must stay separate — another client, another person — on another machine.' > /opt/dt-launcher/README.md
+# What this image can do, one word per line, for the engine to read before it relies on it (url-token: the
+# local-mode URL token behind dt-url-token).
+RUN mkdir -p /opt/dt-image && printf '%s\n' url-token > /opt/dt-image/features && chmod 0644 /opt/dt-image/features
+# made here, 0755: a COPY --chmod would give a directory it creates the file's mode, 0644, which node cannot enter
+RUN install -d -m 0755 /etc/claude-code
 RUN mkdir -p /opt/dt-template /workspaces /files && chown -R node:node /opt/dt-template /workspaces /files
 USER node
 # The workspace template, built ONCE here: init, the hq bundle trimmed to its modules, compile.
@@ -99,6 +126,16 @@ COPY --chown=root:root --chmod=0755 files-folder.sh /usr/local/bin/dt-files-fold
 COPY --chown=root:root --chmod=0755 new-workspace.sh /usr/local/bin/dt-new
 COPY --chown=root:root --chmod=0755 origin-proxy.mjs /usr/local/bin/dt-origin-proxy
 COPY --chown=root:root --chmod=0644 egress.nft /etc/dt/egress.nft
+COPY --chown=root:root --chmod=0755 local-egress.mjs /usr/local/bin/dt-local-egress
+COPY --chown=root:root --chmod=0755 url-token.sh /usr/local/bin/dt-url-token
+# Claude Code under trust, image-wide: managed settings, above every user and project file. A repository's
+# own .mcp.json approvals already wait for the trust dialog; enableAllProjectMcpServers=false here also stops
+# a user-level true from approving every repository's servers. The gaps are in the README (Agents and trust).
+COPY --chown=root:root --chmod=0644 claude-code/managed-settings.json /etc/claude-code/managed-settings.json
+# A non-interactive run (claude -p) never shows the trust dialog, and would run an untrusted folder's hooks
+# and .mcp.json servers; the front adds --setting-sources user there until the folder is trusted.
+COPY --chown=root:root --chmod=0755 claude-code/claude.sh /usr/local/bin/claude
+COPY --chown=root:root --chmod=0644 claude-code/trust.mjs /usr/local/lib/dt/claude-trust.mjs
 WORKDIR /workspaces
 EXPOSE 8080
 # root: the entrypoint applies the egress policy, chowns a freshly attached volume, and stays as a small

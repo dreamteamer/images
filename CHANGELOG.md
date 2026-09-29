@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.6.0 — 2026-09-28 — local mode behind a URL token; agents under trust
+
+- **Local mode runs behind the origin proxy.** The proxy runs as `dtproxy` on 8080 (bound to
+  `DT_LOCAL_BIND`, default `127.0.0.1`), with code-server on `127.0.0.1:8081`, the same two processes as
+  hosted mode. Hosted mode is unchanged. A URL token (32 random bytes, base64url) is written on first start
+  to `/home/node/.dt/url-token`, `root:dtproxy 0640`, where the proxy can read it and `node` cannot.
+  `?tkn=<token>` sets an `HttpOnly; SameSite=Strict` cookie (`dt_local_<port>`) and redirects without the
+  token. Without the cookie a request gets 401; a `Host` that is not `localhost`/`127.0.0.1`/`[::1]` gets
+  403; `/healthz` stays open. A rotation takes effect on the next request (the proxy re-reads the file on an
+  mtime change). `DT_LOCAL_AUTH=off` turns the check off and logs a warning. A bare URL opens the machine
+  home in local mode too.
+- **`dt-url-token show|rotate`** (root only) and **`/opt/dt-image/features`** (`url-token`): the engine
+  reads the token through a root `docker exec` and opens the tokened URL.
+- **`dt-new` refuses a root that is not a real mount** (`findmnt`: `overlay`, `tmpfs`, `ramfs`), naming the
+  mount to add, in both modes.
+- **Agents under trust (R2.7).** Claude Code: managed `enableAllProjectMcpServers: false`. Gemini CLI:
+  folder trust pinned on in `/etc/gemini-cli/settings.json`. Codex needs no setting, since it ignores an
+  untrusted project's `.codex/`. The README's "Agents and trust" table lists what no setting covers
+  (`claude -p` in an untrusted folder, Antigravity).
+- **Editor extensions pinned by version and sha256 (R2.8):** `anthropic.claude-code@2.1.281` (the CLI's
+  version, per platform) and `dreamteamer.dreamteamer-vscode@0.18.2`. The `.vsix` files are downloaded from
+  Open VSX and checked with `sha256sum -c`, like the code-server `.deb`. `devcontainer.metadata` is built
+  from the same ARGs, so its versions cannot drift from the installed ones.
+- **A volume mounted below `/workspaces`** (`dt start container` mounts one at `/workspaces/<name>`) is
+  root-owned when it first comes up. The entrypoint now gives each such mount point to `node` (the mount
+  point only, never its contents, never through a symlink); a read-only one is logged and left alone.
+  Before this, the first start failed with `cp: Permission denied` and the container restarted in a loop.
+- **Directories for system config are 0755:** `COPY --chmod=0644` had given `/etc/claude-code` and
+  `/etc/gemini-cli` mode 0644, which `node` could not enter, so neither CLI could read its settings.
+- **Security review fixes (local mode):**
+  - `/healthz` answers only a local `Host` (403 otherwise), so a page on another site cannot probe
+    localhost ports to learn that a machine is running. The engine's probe sends `127.0.0.1:<port>`.
+  - **Isolation between local containers.** A bridge network per container does not isolate on Docker
+    Desktop (measured on 29.3.1: from container A, B's container IP and `host.docker.internal:<B's
+    published port>` both reached B). With `CAP_NET_ADMIN` the entrypoint now applies `dt-local-egress`, an
+    nft policy for `node` only: no new connection to private, CGNAT or link-local IPv4, IPv6 ULA or
+    link-local, or the host gateways resolved at start; DNS, loopback and the internet stay open.
+    `DT_LOCAL_EGRESS=open` skips it, loudly. Without `CAP_NET_ADMIN` the start goes on with a warning.
+  - A WebSocket upgrade, and every request that is not `GET`/`HEAD`, must carry an `Origin` naming exactly
+    the request's `Host` (`http://localhost:<port>`), else 403. Every localhost port is the same site, so
+    `SameSite=Strict` let a page on another local port send the cookie with its fetches and WebSockets
+    (cross-site WebSocket hijacking). A `GET` without an `Origin` (a navigation) still passes. The check
+    holds with `DT_LOCAL_AUTH=off` too.
+- **`claude -p` under trust.** Measured on Claude Code 2.1.281: `claude -p` in an untrusted cloned
+  repository ran its `.claude/settings.json` hooks and started its `.mcp.json` servers, logged in or not.
+  `claude` on PATH is now a front for the npm binary: a non-interactive run in a folder that
+  `~/.claude.json` does not trust gets `--setting-sources user`, which skips the folder's settings, hooks,
+  `.mcp.json` servers, `CLAUDE.md` and skills (measured against a fixture; `--safe-mode` would also drop the
+  user's own). Interactive sessions are unchanged. The Agent SDK and the editor extension do not go through
+  the front (README, Agents and trust).
+- **Breaking:** a non-root start (`-u node`) has no proxy and so no token, and now refuses
+  `DT_LOCAL_BIND=0.0.0.0` unless `DT_LOCAL_AUTH=off`.
+
 ## 0.5.0 — 2026-09-26 — several workspaces per machine; the whole home persists
 
 - **The whole home is on the volume** (hosted). `DT_PERSIST_HOME` is node's home itself, not a list of

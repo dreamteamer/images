@@ -5,10 +5,15 @@
 # defaults are merged into the person's settings, and code-server takes over.
 #
 # Two modes, chosen EXPLICITLY by DT_MODE:
-#   local (default)  Docker Desktop via `dt start container`. code-server serves port 8080 with no auth of
-#                    its own, bound to 127.0.0.1 unless DT_LOCAL_BIND=0.0.0.0 — which a Docker port
-#                    mapping needs, and which `dt start container` must therefore pass (the host side
-#                    of the mapping is loopback already).
+#   local (default)  Docker Desktop via `dt start container`. The same two processes as hosted: code-server
+#                    on 127.0.0.1:8081, and dt-origin-proxy (as `dtproxy`) on 8080, bound to 127.0.0.1
+#                    unless DT_LOCAL_BIND=0.0.0.0 — which a Docker port mapping needs, and which `dt start
+#                    container` passes (the host side of the mapping is loopback already). The proxy asks
+#                    for the URL token (dt-url-token, /home/node/.dt/url-token, written here on first start):
+#                    `?tkn=` once, then a cookie; a Host that is not localhost is refused. DT_LOCAL_AUTH=off
+#                    drops the URL token check, loudly; debugging only. With CAP_NET_ADMIN, node may not
+#                    connect to private ranges or the host gateways (dt-local-egress; DT_LOCAL_EGRESS=open
+#                    is the loud opt-out); without it, a loud warning and no isolation.
 #   hosted           behind the dreamteamer gateway. Refuses to start unless DT_GATEWAY_PUBLIC_KEY (or
 #                    DT_GATEWAY_PUBLIC_KEYS) imports and DT_ORIGIN_HOST is set; applies the egress policy
 #                    (/etc/dt/egress.nft + a tc bandwidth cap; failure is fatal, DT_EGRESS_POLICY=off is
@@ -35,8 +40,8 @@ WS="${DT_WORKSPACE_DIR:-/workspaces/${DT_WORKSPACE:-hq}}"
 # machine's own filesystem is rebuilt on every stop/start. Local (Docker Desktop): the image's /home/node.
 NODE_HOME="${DT_PERSIST_HOME:-/home/node}"
 # Hosted: a bare machine URL opens the machine's home window (/opt/dt-launcher: every workspace, create,
-# clone), whatever was open last; a workspace is ?folder=/workspaces/<name>, one per tab. Local: the one
-# workspace `dt start container` made.
+# clone), whatever was open last; a workspace is ?folder=/workspaces/<name>, one per tab. The same in local
+# mode since 0.6.0 (supervised, as root); an unsupervised non-root start still opens its one workspace.
 LAUNCHER=/opt/dt-launcher
 EDITOR_ARGS=(--auth none --disable-telemetry --disable-update-check --extensions-dir /opt/code-server/extensions --user-data-dir "$NODE_HOME/.local/share/code-server")
 
@@ -98,13 +103,25 @@ case "$BIND" in
   127.0.0.1|0.0.0.0) ;;
   *) die "DT_LOCAL_BIND must be 127.0.0.1 or 0.0.0.0 (got '$BIND')" ;;
 esac
+LOCAL_AUTH="${DT_LOCAL_AUTH:-on}"
+if [ "$MODE" = local ]; then
+  case "$LOCAL_AUTH" in
+    on|off) ;;
+    *) die "DT_LOCAL_AUTH must be on or off (got '$LOCAL_AUTH')" ;;
+  esac
+fi
 if [ "$MODE" = local ] && [ -n "${DT_GATEWAY_PUBLIC_KEY:-}${DT_GATEWAY_PUBLIC_KEYS:-}" ]; then
-  log "a gateway key is set but DT_MODE is not hosted: serving LOCAL mode on $BIND:8080, no origin proxy"
+  log "a gateway key is set but DT_MODE is not hosted: serving LOCAL mode on $BIND:8080, behind the URL token, no gateway check"
 fi
 
-# Not root (a `docker run -u node`, or an image that ends on USER node): local mode only, unsupervised.
+# Not root (a `docker run -u node`, or an image that ends on USER node): local mode only, unsupervised, and
+# with no URL token — the proxy needs root to start as its own user. So it stays on loopback unless the
+# URL token check is switched off explicitly.
 if [ "$(id -u)" != "0" ]; then
   [ "$MODE" = local ] || die "hosted mode must start as root: it applies the egress policy and runs the origin proxy as its own user"
+  if [ "$BIND" = 0.0.0.0 ] && [ "$LOCAL_AUTH" != off ]; then
+    die "started as $(id -un), so there is no URL token: refusing to serve on 0.0.0.0 (start as root, or set DT_LOCAL_AUTH=off to debug)"
+  fi
   prepare
   exec code-server --bind-addr "$BIND:8080" "${EDITOR_ARGS[@]}" "$WS"
 fi
@@ -120,6 +137,9 @@ if [ "$MODE" = hosted ]; then
   PROXY_ENV=(DT_PROXY_PORT=8080 DT_EDITOR_PORT=8081 "DT_ORIGIN_HOST=$DT_ORIGIN_HOST")
   [ -z "${DT_GATEWAY_PUBLIC_KEY:-}" ] || PROXY_ENV+=("DT_GATEWAY_PUBLIC_KEY=$DT_GATEWAY_PUBLIC_KEY")
   [ -z "${DT_GATEWAY_PUBLIC_KEYS:-}" ] || PROXY_ENV+=("DT_GATEWAY_PUBLIC_KEYS=$DT_GATEWAY_PUBLIC_KEYS")
+else
+  id dtproxy >/dev/null 2>&1 || die "the dtproxy user is missing from the image"
+  PROXY_ENV=(DT_PROXY_MODE=local DT_PROXY_PORT=8080 DT_EDITOR_PORT=8081 "DT_PROXY_BIND=$BIND" DT_URL_TOKEN_FILE=/home/node/.dt/url-token "DT_LOCAL_AUTH=$LOCAL_AUTH")
 fi
 
 apply_egress() {
@@ -139,11 +159,49 @@ apply_egress() {
 }
 if [ "$MODE" = hosted ]; then apply_egress ; fi
 
+# Local: a per-container bridge does not isolate on Docker Desktop (another container's IP, and its published
+# port through host.docker.internal, both answer), so node may not open a connection to a private range or a
+# host gateway (dt-local-egress renders the ruleset; DNS and the internet stay open). Missing CAP_NET_ADMIN
+# (an engine older than the one that adds it) is a loud warning, not a stop: local mode keeps working.
+has_net_admin() {
+  local eff
+  eff=$(awk '/^CapEff:/ {print $2}' /proc/self/status)
+  [ -n "$eff" ] && (( (16#$eff >> 12) & 1 ))
+}
+apply_local_egress() {
+  local policy="${DT_LOCAL_EGRESS:-isolated}" ruleset
+  case "$policy" in
+    open)
+      log "⚠ ⚠ ⚠  DT_LOCAL_EGRESS=open — NO LOCAL ISOLATION: this workspace can reach other containers, the host and its LAN. Use it to reach a database on this computer."
+      return 0 ;;
+    isolated) ;;
+    *) die "DT_LOCAL_EGRESS must be isolated or open (got '$policy')" ;;
+  esac
+  if ! has_net_admin; then
+    log "⚠ ⚠ ⚠  no CAP_NET_ADMIN — LOCAL ISOLATION IS OFF: this workspace can reach other containers, the host and its LAN. Update dreamteamer (dt start container adds the capability)."
+    return 0
+  fi
+  ruleset=$(/usr/local/bin/node /usr/local/bin/dt-local-egress) || die "could not render the local egress policy (set DT_LOCAL_EGRESS=open to start without it)"
+  nft -f - <<<"$ruleset" || die "could not apply the local egress policy (set DT_LOCAL_EGRESS=open to start without it)"
+  log "local egress policy applied: no private ranges or host gateways for node; DNS and the internet open"
+}
+if [ "$MODE" = local ]; then apply_local_egress ; fi
+
 # A freshly attached volume (Fly, or any raw block device) mounts owned by root; a Docker named volume
 # inherits the image's ownership. Only the two fixed mount points are touched, never their contents.
 for d in /workspaces /files; do
   if [ -d "$d" ] && [ "$(stat -c %u "$d")" != "$(id -u node)" ]; then chown node:node "$d"; fi
 done
+# A volume mounted BELOW /workspaces (`dt start container` mounts one at /workspaces/<name>) comes up owned
+# by root when the image has nothing at that path. Each such mount point is handed to node too — the mount
+# point only, never its contents, never through a symlink — and a read-only one is left as it is.
+while IFS= read -r m; do
+  m=$(printf '%b' "$m")   # findmnt -r escapes spaces and the like as \xNN
+  case "$m" in /workspaces/?*) ;; *) continue ;; esac
+  if [ -d "$m" ] && [ ! -L "$m" ] && [ "$(stat -c %u "$m")" != "$(id -u node)" ]; then
+    chown -h node:node "$m" 2>/dev/null || log "left $m as it is (read-only?): node cannot write there"
+  fi
+done < <(findmnt -rn -o TARGET 2>/dev/null || true)
 
 # DISABLE_AUTOUPDATER: the home persists now, so a CLI that updated itself there would outlive every image
 # release; the image pins Claude Code's version instead.
@@ -153,6 +211,11 @@ done
 if [ "$NODE_HOME" != /home/node ] && [ "$(getent passwd node | cut -d: -f6)" != "$NODE_HOME" ]; then
   usermod -d "$NODE_HOME" node || die "could not point node's home at $NODE_HOME"
 fi
+# Local: the URL token, created once in the home volume (root:dtproxy 0640 — the proxy reads it, node cannot)
+if [ "$MODE" = local ]; then
+  /usr/local/bin/dt-url-token ensure || die "could not write the URL token (/home/node/.dt/url-token)"
+  [ "$LOCAL_AUTH" = on ] || log "⚠ ⚠ ⚠  DT_LOCAL_AUTH=off — NO URL TOKEN: any page in any browser on this computer can open this machine. Debugging only."
+fi
 AS_NODE=(setpriv --reuid=node --regid=node --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all env "HOME=$NODE_HOME" USER=node LOGNAME=node DISABLE_AUTOUPDATER=1)
 AS_PROXY=(setpriv --reuid=dtproxy --regid=dtproxy --clear-groups --no-new-privs --inh-caps=-all --bounding-set=-all)
 
@@ -161,15 +224,11 @@ AS_PROXY=(setpriv --reuid=dtproxy --regid=dtproxy --clear-groups --no-new-privs 
 # ---- supervise ----
 declare -A NAMES=()
 STOPPING=0
-if [ "$MODE" = hosted ]; then
-  (cd / && exec "${AS_PROXY[@]}" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "${PROXY_ENV[@]}" /usr/local/bin/node --disable-sigusr1 /usr/local/bin/dt-origin-proxy) &
-  NAMES[$!]=dt-origin-proxy
-  (cd "$WS" && exec "${AS_NODE[@]}" code-server --bind-addr 127.0.0.1:8081 "${EDITOR_ARGS[@]}" --ignore-last-opened "$LAUNCHER") &
-  NAMES[$!]=code-server
-else
-  (cd "$WS" && exec "${AS_NODE[@]}" code-server --bind-addr "$BIND:8080" "${EDITOR_ARGS[@]}" "$WS") &
-  NAMES[$!]=code-server
-fi
+# both modes: the proxy owns 8080 (hosted: the gateway assertion; local: the URL token), the editor is loopback
+(cd / && exec "${AS_PROXY[@]}" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "${PROXY_ENV[@]}" /usr/local/bin/node --disable-sigusr1 /usr/local/bin/dt-origin-proxy) &
+NAMES[$!]=dt-origin-proxy
+(cd "$WS" && exec "${AS_NODE[@]}" code-server --bind-addr 127.0.0.1:8081 "${EDITOR_ARGS[@]}" --ignore-last-opened "$LAUNCHER") &
+NAMES[$!]=code-server
 
 stop_children() { kill -TERM "${!NAMES[@]}" 2>/dev/null || true; }
 trap 'STOPPING=1; stop_children' TERM INT

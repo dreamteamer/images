@@ -3,12 +3,14 @@
 // `HQ_IMAGE=hq:sec node --test tests/container.test.mjs`). Every docker call carries a hard timer.
 import { execFile } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
+import http from 'node:http';
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const IMG = process.env.HQ_IMAGE;
 const PUB = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
 const names = new Set();
+const vols = new Set();
 
 function docker(args, { timeout = 60_000 } = {}) {
 	return new Promise((resolve) => {
@@ -47,7 +49,10 @@ async function runToExit(args, seconds) {
 	return { ...r, took: Date.now() - t0 };
 }
 
-after(async () => { for (const n of names) await docker(['rm', '-f', n]); });
+after(async () => {
+	for (const n of names) await docker(['rm', '-f', n]);
+	for (const v of vols) await docker(['volume', 'rm', '-f', v]);
+});
 
 describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run against a built image' }, () => {
 	test('hosted mode without a gateway key exits non-zero within 5 s, saying why, and never listens', async () => {
@@ -170,6 +175,9 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 			assert.match(r.out, /0100007F:1F90/);
 			assert.doesNotMatch(r.out, /^00000000:1F90$/m);
 			assert.doesNotMatch(r.out, /^0{32}:1F90$/m);
+			// no --cap-add NET_ADMIN (an engine older than 0.6's): the start goes on, and says isolation is off
+			const logs = await docker(['logs', name]);
+			assert.match(logs.err, /no CAP_NET_ADMIN — LOCAL ISOLATION IS OFF/);
 			await docker(['rm', '-f', name]);
 		});
 		test('DT_LOCAL_BIND=0.0.0.0 (what `dt start container` needs) serves the mapped port', async () => {
@@ -180,6 +188,151 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 			const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(5000) });
 			assert.equal(res.status, 200);
 			await docker(['rm', '-f', name]);
+		});
+		describe('isolation between local containers (0.6.0 security review): one bridge each does not isolate on Docker Desktop', () => {
+			const tag = process.pid;
+			const [a, b, c] = ['a', 'b', 'c'].map((x) => `dt-ct-iso-${x}-${tag}`);
+			const nets = [a, b, c].map((n) => `dreamteamer-${n}`);
+			let bip, bport;
+			// curl's exit code: 0 = an HTTP answer came back (B's proxy says 403 to a foreign Host: it was REACHED);
+			// 7 = could not connect (refused by the policy)
+			const probe = async (from, user, url) => (await execIn(from, `curl -s -o /dev/null --max-time 8 ${url}; echo $?`, user)).out.trim();
+			after(async () => { for (const n of nets) await docker(['network', 'rm', n]); });
+			test('three containers, each on its own labelled bridge, as `dt start container` makes them; B publishes 8080 on host loopback', async () => {
+				for (const [i, n] of nets.entries()) {
+					await docker(['network', 'rm', n]);
+					const r = await docker(['network', 'create', '--label', 'dreamteamer=1', '--label', `dreamteamer.name=${[a, b, c][i]}`, n]);
+					assert.equal(r.code, 0, r.err);
+				}
+				const common = ['--cap-add', 'NET_ADMIN', '-e', 'DT_WORKSPACE=ct', '-e', 'DT_LOCAL_BIND=0.0.0.0', '-p', '127.0.0.1::8080'];
+				await run(b, ['--network', nets[1], ...common]);
+				await run(a, ['--network', nets[0], ...common]);
+				await run(c, ['--network', nets[2], ...common, '-e', 'DT_LOCAL_EGRESS=open']);
+				for (const n of [b, a, c]) await waitHealthy(n);
+				bip = (await docker(['inspect', '-f', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}', b])).out.trim();
+				bport = (await docker(['port', b, '8080/tcp'])).out.trim().split('\n')[0].split(':').pop();
+				assert.match(bip, /^\d+\.\d+\.\d+\.\d+$/);
+				assert.match((await docker(['logs', a])).err, /local egress policy applied/);
+			});
+			test('as node, A cannot reach B by its container IP, nor its published port through host.docker.internal or gateway.docker.internal', async () => {
+				assert.equal(await probe(a, 'node', `http://${bip}:8080/healthz`), '7');
+				assert.equal(await probe(a, 'node', `http://host.docker.internal:${bport}/healthz`), '7');
+				assert.equal(await probe(a, 'node', `http://gateway.docker.internal:${bport}/healthz`), '7');
+				assert.match((await execIn(a, 'nft list table inet dt_local_egress')).out, /@blocked_v4 counter packets [1-9]/);
+			});
+			test('the internet and DNS stay open for node', async () => {
+				// registry.npmjs.org, not example.com: a first start already depends on reaching it
+				assert.equal(await probe(a, 'node', 'https://registry.npmjs.org/'), '0');
+			});
+			test('root in A is not filtered (the proxy and the supervisor only listen): the policy is node\'s', async () => {
+				assert.equal(await probe(a, 'root', `http://${bip}:8080/healthz`), '0');
+			});
+			test('DT_LOCAL_EGRESS=open restores reachability, and says so loudly', async () => {
+				assert.equal(await probe(c, 'node', `http://${bip}:8080/healthz`), '0');
+				assert.equal(await probe(c, 'node', `http://host.docker.internal:${bport}/healthz`), '0');
+				assert.match((await docker(['logs', c])).err, /DT_LOCAL_EGRESS=open — NO LOCAL ISOLATION/);
+				assert.notEqual((await execIn(c, 'nft list table inet dt_local_egress')).code, 0, 'no table at all');
+				for (const n of [a, b, c]) await docker(['rm', '-f', n]);
+			});
+		});
+		describe('the URL token (0.6.0)', () => {
+			const name = `dt-ct-token-${process.pid}`;
+			let port;
+			// node:http, not fetch: fetch will not send a Host header of the caller's choosing
+			const get = (p, headers = {}) => new Promise((resolve, reject) => {
+				const req = http.request({ host: '127.0.0.1', port, path: p, headers: { host: `localhost:${port}`, ...headers } }, (res) => {
+					let body = '';
+					res.on('data', (c) => (body += c));
+					res.on('end', () => resolve({ status: res.statusCode, text: async () => body, headers: { get: (k) => { const v = res.headers[k]; return Array.isArray(v) ? v[0] : v; } } }));
+				});
+				req.setTimeout(10_000, () => req.destroy(new Error('timeout')));
+				req.on('error', reject);
+				req.end();
+			});
+			const token = async () => (await execIn(name, 'dt-url-token show')).out.trim();
+			// code-server itself answered: its page, or its own redirect of / to the machine home's ?folder=
+			const reached = (r) => r.status === 200 || (r.status === 302 && /folder=/.test(r.headers.get('location') ?? '') && !r.headers.get('set-cookie'));
+			test('starts behind the proxy: dtproxy owns 8080, code-server is on 127.0.0.1:8081 opening the machine home', async () => {
+				await run(name, ['-e', 'DT_WORKSPACE=ct', '-e', 'DT_LOCAL_BIND=0.0.0.0', '-p', '127.0.0.1::8080']);
+				await waitHealthy(name);
+				port = (await docker(['port', name, '8080/tcp'])).out.trim().split('\n')[0].split(':').pop();
+				const ps = await execIn(name, 'ps -eo user=,args=');
+				assert.match(ps.out, /^dtproxy +\/usr\/local\/bin\/node --disable-sigusr1 \/usr\/local\/bin\/dt-origin-proxy/m);
+				assert.match(ps.out, /code-server[^\n]*--bind-addr 127\.0\.0\.1:8081[^\n]*--ignore-last-opened \/opt\/dt-launcher/);
+				assert.equal((await execIn(name, 'cat /opt/dt-image/features')).out, 'url-token\n');
+			});
+			test('the token file: 43 base64url chars, root:dtproxy 0640 in root:dtproxy 0750; node cannot read it or run dt-url-token', async () => {
+				assert.match(await token(), /^[A-Za-z0-9_-]{43}$/);
+				assert.deepEqual((await execIn(name, 'stat -c "%U:%G %a" /home/node/.dt /home/node/.dt/url-token')).out.trim().split('\n'), ['root:dtproxy 750', 'root:dtproxy 640']);
+				assert.notEqual((await execIn(name, 'cat /home/node/.dt/url-token', 'node')).code, 0);
+				const r = await execIn(name, 'dt-url-token show', 'node');
+				assert.notEqual(r.code, 0);
+				assert.match(r.err, /run as root/);
+				assert.equal(r.out, '');
+			});
+			test('no cookie 401; a foreign Host 403; ?tkn= 302 with the cookie; the cookie 200; /healthz open', async () => {
+				assert.equal((await get('/')).status, 401);
+				assert.match(await (await get('/')).text(), /dt open container/);
+				assert.equal((await get('/', { host: `evil.test:${port}` })).status, 403);
+				assert.equal((await get('/healthz')).status, 200);
+				assert.equal((await get('/healthz', { host: `127.0.0.1:${port}` })).status, 200, 'the engine\'s readiness probe');
+				assert.equal((await get('/healthz', { host: `evil.test:${port}` })).status, 403, 'no fingerprinting from another site');
+				const t = await token();
+				const r = await get(`/?tkn=${t}`);
+				assert.equal(r.status, 302);
+				assert.equal(r.headers.get('location'), '/');
+				const c = r.headers.get('set-cookie');
+				assert.match(c, new RegExp(`^dt_local_${port}=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=/$`));
+				const via = await get('/', { cookie: c.split(';')[0] });
+				assert.ok(reached(via), `${via.status} ${via.headers.get('location')}`);
+				assert.equal((await get('/?folder=/opt/dt-launcher', { cookie: c.split(';')[0] })).status, 200);
+				// another localhost port is the same site: the cookie rides along, the Origin does not match
+				assert.equal((await get('/', { cookie: c.split(';')[0], origin: `http://localhost:${Number(port) + 1}` })).status, 403);
+				assert.equal((await get('/', { cookie: c.split(';')[0], connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', origin: `http://localhost:${Number(port) + 1}` })).status, 403, 'a cross-origin upgrade is refused before any 101');
+			});
+			test('rotate: the old cookie is refused at once, the new token opens it, and it survives a restart', async () => {
+				const old = await token();
+				const r = await execIn(name, 'dt-url-token rotate');
+				const fresh = r.out.trim();
+				assert.match(fresh, /^[A-Za-z0-9_-]{43}$/);
+				assert.notEqual(fresh, old);
+				assert.equal((await get('/', { cookie: `dt_local_${port}=${old}` })).status, 401);
+				assert.ok(reached(await get('/', { cookie: `dt_local_${port}=${fresh}` })));
+				await docker(['restart', '-t', '5', name], { timeout: 60_000 });
+				await waitHealthy(name);
+				port = (await docker(['port', name, '8080/tcp'])).out.trim().split('\n')[0].split(':').pop();
+				assert.equal(await token(), fresh, 'the token lives in the home, not in the process');
+				await docker(['rm', '-f', name]);
+			});
+		});
+		test('a volume at /workspaces/<name> (what dt start container mounts) comes up root-owned and is handed to node; a read-only one beside it does not stop the start', async () => {
+			const name = `dt-ct-submount-${process.pid}`;
+			const ws = `dt-ct-sub-ws-${process.pid}`, ro = `dt-ct-sub-ro-${process.pid}`;
+			vols.add(ws); vols.add(ro);
+			await run(name, ['-e', 'DT_WORKSPACE=ct', '-v', `${ws}:/workspaces/ct`, '-v', `${ro}:/workspaces/ref:ro`]);
+			await waitHealthy(name);
+			assert.equal((await execIn(name, 'stat -c %U /workspaces/ct')).out.trim(), 'node');
+			assert.equal((await execIn(name, 'test -f /workspaces/ct/package.json && test -d /workspaces/ct/.dreamteamer && echo laid-down')).out.trim(), 'laid-down');
+			assert.equal((await execIn(name, 'stat -c %U /workspaces/ref')).out.trim(), 'root');
+			const logs = await docker(['logs', name]);
+			assert.match(logs.err, /left \/workspaces\/ref as it is/);
+			await docker(['rm', '-f', name]);
+		});
+		test('DT_LOCAL_AUTH=off serves without a token, and says so loudly', async () => {
+			const name = `dt-ct-noauth-${process.pid}`;
+			await run(name, ['-e', 'DT_WORKSPACE=ct', '-e', 'DT_LOCAL_BIND=0.0.0.0', '-e', 'DT_LOCAL_AUTH=off', '-p', '127.0.0.1::8080']);
+			await waitHealthy(name);
+			const port = (await docker(['port', name, '8080/tcp'])).out.trim().split('\n')[0].split(':').pop();
+			const res = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'manual', signal: AbortSignal.timeout(10_000) });
+			assert.notEqual(res.status, 401);
+			const logs = await docker(['logs', name]);
+			assert.match(logs.err, /DT_LOCAL_AUTH=off[^\n]*NO URL TOKEN/);
+			await docker(['rm', '-f', name]);
+		});
+		test('started as node there is no token, so 0.0.0.0 is refused', async () => {
+			const r = await runToExit(['-u', 'node', '-e', 'DT_LOCAL_BIND=0.0.0.0'], 20);
+			assert.notEqual(r.code, 0);
+			assert.match(r.err, /no URL token/);
 		});
 		test('DT_LOCAL_BIND must be 127.0.0.1 or 0.0.0.0', async () => {
 			const r = await runToExit(['-e', 'DT_LOCAL_BIND=10.0.0.1'], 10);
@@ -261,7 +414,9 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 
 	test('hosted: a bare URL opens the machine home (not the last folder); trust stays on; the launcher and dt-new are installed', async () => {
 		const name = `dt-ct-launch-${process.pid}`;
-		await run(name, ['--cap-add', 'NET_ADMIN', ...hostedEnv]);
+		const vol = `dt-ct-launch-ws-${process.pid}`;
+		vols.add(vol);
+		await run(name, ['--cap-add', 'NET_ADMIN', '-v', `${vol}:/workspaces`, ...hostedEnv]);
 		await waitHealthy(name);
 		const cmd = await execIn(name, 'ps -o args= -u node | grep -m1 "code-server.*--bind-addr 127.0.0.1:8081"');
 		assert.match(cmd.out, /--ignore-last-opened \/opt\/dt-launcher\s*$/);
@@ -280,6 +435,18 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 		await docker(['rm', '-f', name]);
 	});
 
+	test('dt-new refuses a root on the container\'s own layer, naming the mount to add', async () => {
+		const name = `dt-ct-nomount-${process.pid}`;
+		await run(name, ['-e', 'DT_WORKSPACE=ct']);
+		await waitHealthy(name);
+		const r = await execIn(name, 'dt-new second --empty', 'node');
+		assert.notEqual(r.code, 0);
+		assert.match(r.err, /\/workspaces is not a real mount \(it is overlay/);
+		assert.match(r.err, /mount a volume at \/workspaces/);
+		assert.equal((await execIn(name, 'test -e /workspaces/second && echo made || true')).out.trim(), '');
+		await docker(['rm', '-f', name]);
+	});
+
 	test('DT_EGRESS_POLICY=off starts hosted without NET_ADMIN, and says so loudly', async () => {
 		const name = `dt-ct-noegress-${process.pid}`;
 		await run(name, [...hostedEnv, '-e', 'DT_EGRESS_POLICY=off']);
@@ -287,5 +454,67 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 		const logs = await docker(['logs', name]);
 		assert.match(logs.err, /DT_EGRESS_POLICY=off[^\n]*NO EGRESS POLICY/);
 		await docker(['rm', '-f', name]);
+	});
+
+	test('claude -p in an untrusted cloned repository runs neither its hooks nor its .mcp.json servers; once trusted it does', async () => {
+		// the review's fixture: a SessionStart hook and an MCP server that each leave a marker. No login and no
+		// API: the base URL is a closed port, and the hook and the server start before the first request.
+		const script = String.raw`
+set -u
+export ANTHROPIC_BASE_URL=http://127.0.0.1:9 ANTHROPIC_API_KEY=fixture-not-a-key
+mkdir -p /tmp/w/fx/.claude ~/.claude && cd /tmp/w/fx && git init -q .
+echo '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch /tmp/marker-hook"}]}]}}' > .claude/settings.json
+echo '{"mcpServers":{"fx":{"command":"sh","args":["-c","touch /tmp/marker-mcp; sleep 20"]}}}' > .mcp.json
+echo '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch /tmp/marker-userhook"}]}]}}' > ~/.claude/settings.json
+markers() { sleep 2; for m in hook mcp userhook; do [ -e /tmp/marker-$m ] && printf '%s=Y ' $m || printf '%s=n ' $m; done; echo; rm -f /tmp/marker-*; }
+echo "front: $(command -v claude) $(head -c 11 "$(command -v claude)")"
+timeout 60 claude -p hi </dev/null >/dev/null 2>/tmp/err; echo "untrusted: $(markers)"; grep -c 'is not trusted' /tmp/err
+node -e 'require("fs").writeFileSync(process.env.HOME + "/.claude.json", JSON.stringify({ projects: { "/tmp/w/fx": { hasTrustDialogAccepted: true } } }))'
+timeout 60 claude -p hi </dev/null >/dev/null 2>/tmp/err; echo "trusted: $(markers)"; grep -c 'is not trusted' /tmp/err
+`;
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', IMG, '-c', script], { timeout: 180_000 });
+		assert.match(r.out, /^front: \/usr\/local\/bin\/claude #!\/bin\/bash$/m);
+		assert.match(r.out, /^untrusted: hook=n mcp=n userhook=Y $/m, 'the user\'s own settings still apply');
+		assert.match(r.out, /^trusted: hook=Y mcp=Y userhook=Y $/m);
+		assert.deepEqual(r.out.match(/^\d+$/gm), ['1', '0'], 'the notice is said once, and only when untrusted');
+	});
+	test('R2.8: the devcontainer.metadata label names exactly the extension versions installed in code-server', async () => {
+		const label = await docker(['image', 'inspect', '-f', '{{index .Config.Labels "devcontainer.metadata"}}', IMG]);
+		const want = JSON.parse(label.out)[0].customizations.vscode.extensions;
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', IMG, '-c', 'code-server --extensions-dir /opt/code-server/extensions --list-extensions --show-versions 2>/dev/null'], { timeout: 60_000 });
+		const have = r.out.trim().split('\n').map((l) => l.toLowerCase());
+		for (const ext of want) assert.ok(have.includes(ext.toLowerCase()), `${ext} not in ${have.join(', ')}`);
+		assert.match(want.join(' '), /@\d+\.\d+\.\d+.*@\d+\.\d+\.\d+/, 'the ARGs were substituted');
+	});
+	test('no symlink under the mount roots (a mount target lexically under /workspaces must not land somewhere else)', async () => {
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', IMG, '-c', 'for d in /workspaces /mnt /home/node /files; do [ -L "$d" ] && echo "LINK $d"; [ -d "$d" ] && find "$d" -xdev -type l; done; echo end'], { timeout: 60_000 });
+		assert.equal(r.code, 0, r.err);
+		assert.equal(r.out, 'end\n');
+	});
+	test('R2.7 Claude Code: the managed settings are in place and parse (enableAllProjectMcpServers=false)', async () => {
+		// read as node: an unreadable managed file stops a signed-in Claude Code at startup
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', IMG, '-c', 'stat -c "%U %a" /etc/claude-code/managed-settings.json && cat /etc/claude-code/managed-settings.json'], { timeout: 60_000 });
+		assert.equal(r.code, 0, r.err);
+		const [stat, ...json] = r.out.split('\n');
+		assert.equal(stat, 'root 644');
+		assert.equal(JSON.parse(json.join('\n')).enableAllProjectMcpServers, false);
+	});
+});
+
+// hq-agents, when built: HQ_AGENTS_IMAGE=<ref>
+const AGENTS = process.env.HQ_AGENTS_IMAGE;
+describe('the built hq-agents image', { skip: !AGENTS && 'set HQ_AGENTS_IMAGE=<image ref> to run against a built hq-agents' }, () => {
+	test('R2.7 Gemini CLI: folder trust is pinned on in the system settings file', async () => {
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', AGENTS, '-c', 'cat /etc/gemini-cli/settings.json'], { timeout: 60_000 });
+		assert.equal(r.code, 0, r.err);
+		assert.equal(JSON.parse(r.out).security.folderTrust.enabled, true);
+	});
+	test('R2.7 Codex: no config in the image trusts a project (untrusted projects load no .codex/ layer)', async () => {
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', AGENTS, '-c', 'cat /etc/codex/*.toml /home/node/.codex/config.toml /root/.codex/config.toml 2>/dev/null | grep -c trust_level || true'], { timeout: 60_000 });
+		assert.equal(r.out.trim(), '0');
+	});
+	test('R2.7 Claude Code: the managed settings travel into hq-agents', async () => {
+		const r = await docker(['run', '--rm', '--entrypoint', 'bash', '-u', 'node', AGENTS, '-c', 'cat /etc/claude-code/managed-settings.json'], { timeout: 60_000 });
+		assert.equal(JSON.parse(r.out).enableAllProjectMcpServers, false);
 	});
 });

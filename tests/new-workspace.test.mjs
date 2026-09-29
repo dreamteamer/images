@@ -28,6 +28,9 @@ function setup() {
 		writeFileSync(path.join(bin, tool), `#!/bin/sh\necho "${tool} $* (in $PWD)" >> '${log}'\n`);
 		chmodSync(path.join(bin, tool), 0o755);
 	}
+	// findmnt, stood in: answers FAKE_FSTYPE (ext4 by default: a real volume) and records what it was asked
+	writeFileSync(path.join(bin, 'findmnt'), `#!/bin/sh\necho "findmnt $*" >> '${log}.findmnt'\n[ "\${FAKE_FSTYPE-ext4}" = none ] && exit 1\necho "\${FAKE_FSTYPE-ext4}"\n`);
+	chmodSync(path.join(bin, 'findmnt'), 0o755);
 	// a local "remote": a dreamteamer repo and a plain one, cloned over file:// only in the tests
 	return { base, root, template, bin, log };
 }
@@ -106,5 +109,35 @@ describe('dt-new', () => {
 		assert.equal(r2.status, 0, r2.stderr);
 		assert.match(calls(s), /npm ci .*\(in .*\/cloned2\)/);
 		assert.match(calls(s), /npx --no-install dreamteamer compile \(in .*\/cloned2\)/);
+	});
+
+	test('the root must be a real mount: overlay, tmpfs or ramfs is refused in every mode, naming the mount to add; nothing written', () => {
+		for (const fs of ['overlay', 'tmpfs', 'ramfs']) {
+			const s = setup();
+			for (const args of [['w'], ['w', '--empty']]) {
+				for (const mode of ['hosted', 'local']) {
+					const r = dtNew(s, args, { FAKE_FSTYPE: fs, DT_MODE: mode });
+					assert.notEqual(r.status, 0, `${fs} ${args} ${mode}`);
+					assert.match(r.stderr, new RegExp(`${s.root} is not a real mount \\(it is ${fs}`));
+					assert.match(r.stderr, new RegExp(`mount a volume at ${s.root}`));
+					assert.ok(!existsSync(path.join(s.root, 'w')));
+				}
+			}
+			assert.match(readFileSync(`${s.log}.findmnt`, 'utf8'), new RegExp(`--target ${s.root}`));
+		}
+	});
+
+	test('when findmnt cannot say, dt-new refuses rather than guess', () => {
+		const s = setup();
+		const r = dtNew(s, ['w', '--empty'], { FAKE_FSTYPE: 'none' });
+		assert.notEqual(r.status, 0);
+		assert.match(r.stderr, /cannot tell what filesystem/);
+	});
+
+	test('a real filesystem (ext4, xfs, a bind mount) is accepted', () => {
+		for (const fs of ['ext4', 'xfs', 'virtiofs', 'fakeowner']) {
+			const s = setup();
+			assert.equal(dtNew(s, ['w', '--empty'], { FAKE_FSTYPE: fs }).status, 0, fs);
+		}
 	});
 });

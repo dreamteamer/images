@@ -14,6 +14,8 @@
 #
 # A dreamteamer workspace gets its OWN files folder, /workspaces/.files/<name> (hosted), written into its
 # .env, so two workspaces never share recording or document paths. Exit 0 prints the folder to open.
+# The root must be a real mount (findmnt: not overlay, tmpfs or ramfs), or the workspace would vanish with
+# the container; dt-new refuses and names the mount to add.
 set -euo pipefail
 ROOT="${DT_WORKSPACES_ROOT:-/workspaces}"
 TEMPLATE="${DT_TEMPLATE_DIR:-/opt/dt-template}"
@@ -35,6 +37,13 @@ esac
 [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || die "name must be 1–40 of a-z, 0-9 and '-', starting with a letter or digit (got '$name')"
 case "$name" in files|lost-found|trash) die "'$name' is reserved on this machine" ;; esac
 dest="$ROOT/$name"
+# A workspace on the container's own writable layer (overlay) or in memory (tmpfs) is lost with the
+# container, silently: refuse, and name the mount that would keep it.
+fstype=$(findmnt -n -o FSTYPE --target "$ROOT" 2>/dev/null | head -1) || fstype=""
+[ -n "$fstype" ] || die "cannot tell what filesystem $ROOT is on (findmnt) — refusing, since a workspace there may not survive the container"
+case "$fstype" in
+  overlay|tmpfs|ramfs) die "$ROOT is not a real mount (it is $fstype: gone with the container) — mount a volume at $ROOT first, e.g. dt start container <name> --mount <volume>:$ROOT" ;;
+esac
 [ ! -e "$dest" ] && [ ! -L "$dest" ] || die "$dest already exists"
 
 is_dreamteamer() { [ -f "$1/package.json" ] && node -e 'process.exit(require(process.argv[1]).dreamteamer ? 0 : 1)' "$1/package.json" 2>/dev/null; }
