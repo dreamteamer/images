@@ -21,7 +21,11 @@ RUN npm install -g --no-audit --no-fund @openai/codex@${CODEX_VERSION} @google/g
 # Antigravity CLI is a Go binary from Google's installer, not an npm package. Installed to /usr/local
 # so it sits outside the home volume; `agy` authenticates through a browser-URL loop when it cannot
 # open a browser, which is what a container is.
-RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
+# Fetched to a file and checked before it runs: a release build once piped a non-script answer into bash
+# and failed on "syntax error near unexpected token" with nothing saying what came back.
+RUN curl -fsSL --retry 5 --retry-all-errors -o /tmp/agy-install.sh https://antigravity.google/cli/install.sh \
+ && { head -n1 /tmp/agy-install.sh | grep -q '^#!' || { echo "antigravity install.sh is not a script:" >&2; head -c 300 /tmp/agy-install.sh >&2; exit 1; }; } \
+ && bash /tmp/agy-install.sh && rm -f /tmp/agy-install.sh \
  && (command -v agy >/dev/null || (ls /root/.local/bin/agy >/dev/null 2>&1 && install -m 0755 /root/.local/bin/agy /usr/local/bin/agy)) \
  && command -v agy
 # Agents under trust, image-wide. Gemini CLI: folder trust pinned ON in the system settings file, which
