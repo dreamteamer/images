@@ -193,7 +193,7 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 			const tag = process.pid;
 			const [a, b, c] = ['a', 'b', 'c'].map((x) => `dt-ct-iso-${x}-${tag}`);
 			const nets = [a, b, c].map((n) => `dreamteamer-${n}`);
-			let bip, bport;
+			let bip, bport, nativeIsolation;
 			// curl's exit code: 0 = an HTTP answer came back (B's proxy says 403 to a foreign Host: it was REACHED);
 			// 7 = could not connect (refused by the policy)
 			const probe = async (from, user, url) => (await execIn(from, `curl -s -o /dev/null --max-time 8 ${url}; echo $?`, user)).out.trim();
@@ -204,7 +204,9 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 					const r = await docker(['network', 'create', '--label', 'dreamteamer=1', '--label', `dreamteamer.name=${[a, b, c][i]}`, n]);
 					assert.equal(r.code, 0, r.err);
 				}
-				const common = ['--cap-add', 'NET_ADMIN', '-e', 'DT_WORKSPACE=ct', '-e', 'DT_LOCAL_BIND=0.0.0.0', '-p', '127.0.0.1::8080'];
+				// Docker Desktop defines both names; a Linux engine (the CI runner) does not, so map them the way Desktop does
+				const hosts = ['--add-host', 'host.docker.internal:host-gateway', '--add-host', 'gateway.docker.internal:host-gateway'];
+				const common = ['--cap-add', 'NET_ADMIN', ...hosts, '-e', 'DT_WORKSPACE=ct', '-e', 'DT_LOCAL_BIND=0.0.0.0', '-p', '127.0.0.1::8080'];
 				await run(b, ['--network', nets[1], ...common]);
 				await run(a, ['--network', nets[0], ...common]);
 				await run(c, ['--network', nets[2], ...common, '-e', 'DT_LOCAL_EGRESS=open']);
@@ -213,6 +215,9 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 				bport = (await docker(['port', b, '8080/tcp'])).out.trim().split('\n')[0].split(':').pop();
 				assert.match(bip, /^\d+\.\d+\.\d+\.\d+$/);
 				assert.match((await docker(['logs', a])).err, /local egress policy applied/);
+				// A Linux engine isolates user-defined bridges itself (Docker Desktop, measured 29.3.1, does not):
+				// there even root and the open policy cannot reach B, so the "still reachable" checks have nothing to show
+				nativeIsolation = (await probe(a, 'root', `http://${bip}:8080/healthz`)) !== '0';
 			});
 			test('as node, A cannot reach B by its container IP, nor its published port through host.docker.internal or gateway.docker.internal', async () => {
 				assert.equal(await probe(a, 'node', `http://${bip}:8080/healthz`), '7');
@@ -224,12 +229,15 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 				// registry.npmjs.org, not example.com: a first start already depends on reaching it
 				assert.equal(await probe(a, 'node', 'https://registry.npmjs.org/'), '0');
 			});
-			test('root in A is not filtered (the proxy and the supervisor only listen): the policy is node\'s', async () => {
+			test('root in A is not filtered (the proxy and the supervisor only listen): the policy is node\'s', async (t) => {
+				if (nativeIsolation) return t.skip('this Docker engine isolates bridges itself');
 				assert.equal(await probe(a, 'root', `http://${bip}:8080/healthz`), '0');
 			});
 			test('DT_LOCAL_EGRESS=open restores reachability, and says so loudly', async () => {
-				assert.equal(await probe(c, 'node', `http://${bip}:8080/healthz`), '0');
-				assert.equal(await probe(c, 'node', `http://host.docker.internal:${bport}/healthz`), '0');
+				if (!nativeIsolation) {
+					assert.equal(await probe(c, 'node', `http://${bip}:8080/healthz`), '0');
+					assert.equal(await probe(c, 'node', `http://host.docker.internal:${bport}/healthz`), '0');
+				}
 				assert.match((await docker(['logs', c])).err, /DT_LOCAL_EGRESS=open — NO LOCAL ISOLATION/);
 				assert.notEqual((await execIn(c, 'nft list table inet dt_local_egress')).code, 0, 'no table at all');
 				for (const n of [a, b, c]) await docker(['rm', '-f', n]);
