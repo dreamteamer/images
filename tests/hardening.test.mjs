@@ -178,10 +178,17 @@ describe('CI: pinned, least privilege, gated, recorded, signed', () => {
 	});
 });
 
-describe('0.6.0', () => {
+describe('release', () => {
 	test('package.json and the CHANGELOG agree on the version, and the newest CHANGELOG entry is it', () => {
 		const v = JSON.parse(read('package.json')).version;
-		assert.equal(v, '0.6.0');
+		assert.match(v, /^\d+\.\d+\.\d+$/);
 		assert.equal(read('CHANGELOG.md').match(/^## (\d+\.\d+\.\d+)/m)?.[1], v);
+	});
+	test('both published images get a GitHub build-provenance attestation, which the service\'s deploy gate verifies (0.6.1)', () => {
+		const wf = read('.github/workflows/images.yml');
+		for (const image of ['hq', 'hq-agents']) {
+			assert.match(wf, new RegExp(`uses: actions/attest-build-provenance@[0-9a-f]{40}[^\\n]*\\n(?:[^\\n]*\\n){0,2}?\\s+subject-name: ghcr\\.io/dreamteamer/${image}\\n`), `${image} is not attested`);
+		}
+		assert.equal((wf.match(/^\s+attestations: write/gm) ?? []).length, 2, 'each publishing job needs attestations: write');
 	});
 });
