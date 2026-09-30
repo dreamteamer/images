@@ -144,11 +144,11 @@ describe('the local proxy', () => {
 			assert.doesNotMatch(r.body, /ok|editor/);
 		}
 	});
-	test('no cookie → 401 naming `dt open container`, nothing forwarded', async () => {
+	test('no cookie → 401 naming `dt-host open container`, nothing forwarded', async () => {
 		const n = seen.length;
 		const r = await request(p.port, '/?folder=/workspaces/x');
 		assert.equal(r.status, 401);
-		assert.match(r.body, /dt open container/);
+		assert.match(r.body, /dt-host open container <name>/);
 		assert.equal(seen.length, n);
 	});
 	test('a wrong ?tkn= → 401 and no cookie', async () => {

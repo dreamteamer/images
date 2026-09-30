@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # The `hq` template: a dreamteamer workspace with the hq modules (users · contacts · meetings ·
 # projects, plus assets which contacts depends on), code-server as the editor, Claude Code
-# preinstalled as CLI and extension. `dt start container <name> --template hq` runs this; the
-# `dreamteamer.*` labels are what make it a template to `dt list images`. Behind the hosted gateway
+# preinstalled as CLI and extension. `dt-host start container <name> --template hq` runs this; the
+# `dreamteamer.*` labels are what make it a template to `dt-host list images`. Behind the hosted gateway
 # (DT_GATEWAY_PUBLIC_KEY set) the same image puts dt-origin-proxy in front of the editor and persists
 # the durable parts of $HOME onto the workspace volume (DT_PERSIST_HOME).
 #
@@ -48,7 +48,7 @@ LABEL dreamteamer.template="hq" \
       org.opencontainers.image.description="dreamteamer hq workspace: code-server + Claude Code over users, contacts, meetings, projects" \
       org.opencontainers.image.licenses="Apache-2.0"
 # Dev Containers metadata: when the host's VS Code ATTACHES to a running container of this image
-# (`dt open container <name> --vscode`), the Dev Containers extension reads this label and installs
+# (`dt-host open container <name> --vscode`), the Dev Containers extension reads this label and installs
 # these extensions into the container's VS Code Server — a second extension host beside code-server's,
 # over the same files — and runs as `node`, the user that owns the workspace.
 LABEL devcontainer.metadata="[{\"remoteUser\":\"node\",\"customizations\":{\"vscode\":{\"extensions\":[\"dreamteamer.dreamteamer-vscode@${DT_VSCODE_VERSION}\",\"anthropic.claude-code@${CLAUDE_VSCODE_VERSION}\"],\"settings\":{\"git.autofetch\":true}}}}]"
@@ -101,7 +101,7 @@ RUN mkdir -p /opt/dt-launcher && printf '%s\n' \
   'make one from the dreamteamer template, or clone a repository. Start agents INSIDE a workspace, not here.' '' \
   'All workspaces on a machine share one home and one set of logins (git, Claude, Codex). Keep work that' \
   'must stay separate — another client, another person — on another machine.' > /opt/dt-launcher/README.md
-# What this image can do, one word per line, for the engine to read before it relies on it (url-token: the
+# What this image can do, one word per line, for `dt-host` to read before it relies on it (url-token: the
 # local-mode URL token behind dt-url-token).
 RUN mkdir -p /opt/dt-image && printf '%s\n' url-token > /opt/dt-image/features && chmod 0644 /opt/dt-image/features
 # made here, 0755: a COPY --chmod would give a directory it creates the file's mode, 0644, which node cannot enter

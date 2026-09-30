@@ -180,7 +180,7 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 			assert.match(logs.err, /no CAP_NET_ADMIN — LOCAL ISOLATION IS OFF/);
 			await docker(['rm', '-f', name]);
 		});
-		test('DT_LOCAL_BIND=0.0.0.0 (what `dt start container` needs) serves the mapped port', async () => {
+		test('DT_LOCAL_BIND=0.0.0.0 (what `dt-host start container` needs) serves the mapped port', async () => {
 			const name = `dt-ct-local-open-${process.pid}`;
 			await run(name, ['-e', 'DT_WORKSPACE=ct', '-e', 'DT_LOCAL_BIND=0.0.0.0', '-p', '127.0.0.1::8080']);
 			await waitHealthy(name);
@@ -198,7 +198,7 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 			// 7 = could not connect (refused by the policy)
 			const probe = async (from, user, url) => (await execIn(from, `curl -s -o /dev/null --max-time 8 ${url}; echo $?`, user)).out.trim();
 			after(async () => { for (const n of nets) await docker(['network', 'rm', n]); });
-			test('three containers, each on its own labelled bridge, as `dt start container` makes them; B publishes 8080 on host loopback', async () => {
+			test('three containers, each on its own labelled bridge, as `dt-host start container` makes them; B publishes 8080 on host loopback', async () => {
 				for (const [i, n] of nets.entries()) {
 					await docker(['network', 'rm', n]);
 					const r = await docker(['network', 'create', '--label', 'dreamteamer=1', '--label', `dreamteamer.name=${[a, b, c][i]}`, n]);
@@ -280,7 +280,7 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 			});
 			test('no cookie 401; a foreign Host 403; ?tkn= 302 with the cookie; the cookie 200; /healthz open', async () => {
 				assert.equal((await get('/')).status, 401);
-				assert.match(await (await get('/')).text(), /dt open container/);
+				assert.match(await (await get('/')).text(), /dt-host open container <name>/);
 				assert.equal((await get('/', { host: `evil.test:${port}` })).status, 403);
 				assert.equal((await get('/healthz')).status, 200);
 				assert.equal((await get('/healthz', { host: `127.0.0.1:${port}` })).status, 200, 'the engine\'s readiness probe');
@@ -313,7 +313,7 @@ describe('the built image', { skip: !IMG && 'set HQ_IMAGE=<image ref> to run aga
 				await docker(['rm', '-f', name]);
 			});
 		});
-		test('a volume at /workspaces/<name> (what dt start container mounts) comes up root-owned and is handed to node; a read-only one beside it does not stop the start', async () => {
+		test('a volume at /workspaces/<name> (what dt-host start container mounts) comes up root-owned and is handed to node; a read-only one beside it does not stop the start', async () => {
 			const name = `dt-ct-submount-${process.pid}`;
 			const ws = `dt-ct-sub-ws-${process.pid}`, ro = `dt-ct-sub-ro-${process.pid}`;
 			vols.add(ws); vols.add(ro);

@@ -1,5 +1,17 @@
 # Changelog
 
+## unreleased — the host verbs are `dt-host`
+
+- **Every container verb is spelled `dt-host`.** Engine 0.31.0 moved `setup` and the `container`/`image`
+  verbs out of `dt` into the standalone `@dreamteamer/host` binary (`npm i -g @dreamteamer/host`), with
+  the same words, volumes, labels and networks. The README, the package description, the Dockerfile,
+  entrypoint, `dt-new`, `dt-local-egress` and origin-proxy comments and messages, and the tests say
+  `dt-host start|open|stop|rm container`, `dt-host list images` and `dt-host setup`.
+- **The local-mode 401 now reads ``Open this machine with `dt-host open container <name>`.``** The tests
+  pin the new sentence.
+- The engine pins in the Dockerfiles are unchanged: an image pins a published engine release, and
+  0.31.0 is not published yet.
+
 ## 0.6.1 — 2026-09-30 — attested
 
 - **Release provenance a verifier can find.** Each pushed digest now also gets a GitHub build-provenance

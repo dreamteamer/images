@@ -4,7 +4,7 @@
 # (digest.txt artifact + step summary), an SBOM, and a cosign keyless signature on the digest.
 # `hq-agents` is built FROM the hq digest this run just pushed.
 #
-# ⚠ Production reads a DIGEST, never a tag. `:latest` is no longer pushed: `dt start container` still
+# ⚠ Production reads a DIGEST, never a tag. `:latest` is no longer pushed: `dt-host start container` still
 # resolves `--template hq` to :latest, and 0.4.0 binds code-server to loopback unless DT_LOCAL_BIND=0.0.0.0
 # is passed (see README) — :latest moves again once the engine passes it.
 #

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// dt-local-egress — renders the LOCAL-mode egress policy (Docker Desktop via `dt start container`) as an
+// dt-local-egress — renders the LOCAL-mode egress policy (Docker Desktop via `dt-host start container`) as an
 // nft ruleset on stdout; the root entrypoint pipes it into `nft -f -` before anything runs as `node`.
 //
 // Why: a per-container bridge network does not isolate on Docker Desktop. Measured on 29.3.1: from

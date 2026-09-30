@@ -1,13 +1,13 @@
 #!/bin/bash
-# dt-entrypoint — every start: the workspace dir `dt start container` named (DT_WORKSPACE_DIR,
+# dt-entrypoint — every start: the workspace dir `dt-host start container` named (DT_WORKSPACE_DIR,
 # /workspaces/<name>) is laid down on first start — from DT_REPO when a clone URL was given, else from
 # the prebuilt template — the person's git identity is applied, the runtime is compiled, editor
 # defaults are merged into the person's settings, and code-server takes over.
 #
 # Two modes, chosen EXPLICITLY by DT_MODE:
-#   local (default)  Docker Desktop via `dt start container`. The same two processes as hosted: code-server
+#   local (default)  Docker Desktop via `dt-host start container`. The same two processes as hosted: code-server
 #                    on 127.0.0.1:8081, and dt-origin-proxy (as `dtproxy`) on 8080, bound to 127.0.0.1
-#                    unless DT_LOCAL_BIND=0.0.0.0 — which a Docker port mapping needs, and which `dt start
+#                    unless DT_LOCAL_BIND=0.0.0.0 — which a Docker port mapping needs, and which `dt-host start
 #                    container` passes (the host side of the mapping is loopback already). The proxy asks
 #                    for the URL token (dt-url-token, /home/node/.dt/url-token, written here on first start):
 #                    `?tkn=` once, then a cookie; a Host that is not localhost is refused. DT_LOCAL_AUTH=off
@@ -178,7 +178,7 @@ apply_local_egress() {
     *) die "DT_LOCAL_EGRESS must be isolated or open (got '$policy')" ;;
   esac
   if ! has_net_admin; then
-    log "⚠ ⚠ ⚠  no CAP_NET_ADMIN — LOCAL ISOLATION IS OFF: this workspace can reach other containers, the host and its LAN. Update dreamteamer (dt start container adds the capability)."
+    log "⚠ ⚠ ⚠  no CAP_NET_ADMIN — LOCAL ISOLATION IS OFF: this workspace can reach other containers, the host and its LAN. Update @dreamteamer/host (dt-host start container adds the capability)."
     return 0
   fi
   ruleset=$(/usr/local/bin/node /usr/local/bin/dt-local-egress) || die "could not render the local egress policy (set DT_LOCAL_EGRESS=open to start without it)"
@@ -192,7 +192,7 @@ if [ "$MODE" = local ]; then apply_local_egress ; fi
 for d in /workspaces /files; do
   if [ -d "$d" ] && [ "$(stat -c %u "$d")" != "$(id -u node)" ]; then chown node:node "$d"; fi
 done
-# A volume mounted BELOW /workspaces (`dt start container` mounts one at /workspaces/<name>) comes up owned
+# A volume mounted BELOW /workspaces (`dt-host start container` mounts one at /workspaces/<name>) comes up owned
 # by root when the image has nothing at that path. Each such mount point is handed to node too — the mount
 # point only, never its contents, never through a symlink — and a read-only one is left as it is.
 while IFS= read -r m; do

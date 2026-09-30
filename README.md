@@ -1,6 +1,6 @@
 # dreamteamer images
 
-The template images `dt start container <name> --template <t>` runs. Public, built by CI on a `v*`
+The template images `dt-host start container <name> --template <t>` runs. Public, built by CI on a `v*`
 tag, pushed to `ghcr.io/dreamteamer/<template>` for amd64 and arm64.
 
 | template | what it carries |
@@ -9,17 +9,17 @@ tag, pushed to `ghcr.io/dreamteamer/<template>` for amd64 and arm64.
 | `hq-agents` | `hq` plus OpenAI Codex, Google Gemini CLI and Google Antigravity CLI (`agy`) |
 
 ```bash
-npm i -g dreamteamer                              # the engine — also puts `dt` on PATH
-dt setup                                          # checks Docker, writes ~/.dreamteamer/.env
-dt start container hq-dana --template hq          # → http://localhost:8100/?tkn=… (the machine home)
-dt start container hq-dana --template hq --repo https://github.com/example/hq-dana.git   # join an existing workspace instead
-dt open container hq-dana --vscode                # attach the host's VS Code (Dev Containers) to the same container
+npm i -g @dreamteamer/host                        # puts `dt-host` on PATH; needs only Node and Docker
+dt-host setup                                     # checks Docker, writes ~/.dreamteamer/.env
+dt-host start container hq-dana --template hq     # → http://localhost:8100/?tkn=… (the machine home)
+dt-host start container hq-dana --template hq --repo https://github.com/example/hq-dana.git   # join an existing workspace instead
+dt-host open container hq-dana --vscode           # attach the host's VS Code (Dev Containers) to the same container
 ```
 
 ## what a template is
 
 An image carrying three labels — `dreamteamer.template`, `dreamteamer.ports`, `dreamteamer.modules` —
-and a `devcontainer.metadata` label naming the extensions the host's VS Code installs on attach. `dt
+and a `devcontainer.metadata` label naming the extensions the host's VS Code installs on attach. `dt-host
 list images` shows the templates present; `--template hq` resolves to `ghcr.io/dreamteamer/hq:latest`
 (which CI has not moved since 0.4.0)
 (`DT_REGISTRY` and `DT_TEMPLATE_TAG` in `~/.dreamteamer/.env`), or to `DT_IMAGE_hq=<ref>` when pinned.
@@ -33,13 +33,13 @@ list images` shows the templates present; `--template hq` resolves to `ghcr.io/d
 | `/files` | `FILES_FOLDER` — the files records point at | `dreamteamer-<name>-files` |
 | `/opt/code-server/extensions` | the editor extensions, baked | image |
 
-`--mount <host-path|volume>:<container-path>[:ro]` adds more. Plain `dt rm container` keeps all three
+`--mount <host-path|volume>:<container-path>[:ro]` adds more. Plain `dt-host rm container` keeps all three
 volumes; `--force` removes them.
 
 ## two editors, one container
 
-- **code-server** in the container, at the loopback URL `dt start` prints: zero install on the host.
-- **The host's VS Code, attached** (`dt open container <name> --vscode`): the Dev Containers extension
+- **code-server** in the container, at the loopback URL `dt-host start container` prints: zero install on the host.
+- **The host's VS Code, attached** (`dt-host open container <name> --vscode`): the Dev Containers extension
   starts a VS Code Server inside the container and installs the extensions from `devcontainer.metadata`
   into it. It is a second extension host, over the same files, so the Claude Code extension is
   installed once per editor. Both editors need a login inside the container.
@@ -65,7 +65,7 @@ Apache-2.0.
 With `DT_MODE` unset (or `local`), the container runs the same two processes as hosted mode:
 code-server on `127.0.0.1:8081`, and `dt-origin-proxy` (as its own user `dtproxy`) on port 8080 in
 front of it, bound to `127.0.0.1` unless `DT_LOCAL_BIND=0.0.0.0` — which a Docker port mapping needs,
-and which `dt start container` passes. The host side of the mapping stays on loopback. A bare URL opens
+and which `dt-host start container` passes. The host side of the mapping stays on loopback. A bare URL opens
 the machine home (`/opt/dt-launcher`), as in hosted mode.
 
 The proxy asks for a **URL token**, so another program or web page on the same computer cannot open the
@@ -76,7 +76,7 @@ editor just by knowing the port:
   directory: the proxy reads it, the workspace user `node` cannot.
 - `http://localhost:<port>/?tkn=<token>` (any path) sets an `HttpOnly; SameSite=Strict` cookie and
   redirects to the same URL without `tkn`. Every other request, WebSocket upgrades included, needs that
-  cookie, else 401 (`Open this machine with dt open container <name>`). The cookie is named
+  cookie, else 401 (`Open this machine with dt-host open container <name>`). The cookie is named
   `dt_local_<port>`: cookies are not port-scoped, so two machines on `localhost` keep separate ones.
 - The `Host` header must be `localhost`, `127.0.0.1` or `[::1]` (any port), else 403: a DNS-rebinding page
   cannot reach it through a name of its own.
@@ -87,7 +87,7 @@ editor just by knowing the port:
 - `dt-url-token show` prints the token; `dt-url-token rotate` writes a new one atomically and prints it.
   Both run only as root (`docker exec -u root <container> dt-url-token show`). The proxy re-reads the
   file when its mtime changes, so after a rotation every old cookie gets 401 on its next request.
-- `/opt/dt-image/features` lists `url-token`, which is how the engine knows to fetch the token and open
+- `/opt/dt-image/features` lists `url-token`, which is how `dt-host` knows to fetch the token and open
   the tokened URL. An image without that file gets the plain URL.
 - `DT_LOCAL_AUTH=off` turns the token check off (the Host check stays) and logs a warning. It exists for
   debugging.
@@ -99,7 +99,7 @@ docker exec -u root hq-dana dt-url-token show     # → open http://localhost:81
 
 **Isolation between containers.** A bridge network per container does not isolate on Docker Desktop:
 another container's IP, and its published port through `host.docker.internal`, both answer. So with
-`CAP_NET_ADMIN` (which `dt start container` adds) the entrypoint applies `dt-local-egress`, an nft policy
+`CAP_NET_ADMIN` (which `dt-host start container` adds) the entrypoint applies `dt-local-egress`, an nft policy
 for the workspace user `node` only: no new connection to private, CGNAT or link-local IPv4 (`10/8`,
 `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16`), IPv6 ULA or link-local, or the host gateways
 (`host.docker.internal`, `gateway.docker.internal` and the default gateway, resolved at start). The
@@ -108,7 +108,8 @@ filtered; the proxy only listens.
 
 - `DT_LOCAL_EGRESS=open` skips the policy and logs a warning. Use it to reach something on this computer or
   its LAN, such as a database on the laptop or a git server on a private address.
-- Without `CAP_NET_ADMIN` (an engine older than 0.6's), the container starts anyway and logs that local
+- Without `CAP_NET_ADMIN` (a `dt start container` from an engine older than 0.30.0, or a `docker run`
+  without `--cap-add NET_ADMIN`), the container starts anyway and logs that local
   isolation is off. Hosted mode still refuses to start without it.
 
 Started as a non-root user (`docker run -u node`), there is no supervisor and no proxy, so there is no

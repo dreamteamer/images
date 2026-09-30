@@ -16,7 +16,7 @@
 // `dt-origin-proxy --check` loads the keys and the audience, prints why on failure, and exits: the
 // entrypoint runs it before anything else, so a hosted machine without a usable key never listens.
 //
-// LOCAL mode (DT_PROXY_MODE=local, Docker Desktop via `dt start container`): the same boundary, keyed by
+// LOCAL mode (DT_PROXY_MODE=local, Docker Desktop via `dt-host start container`): the same boundary, keyed by
 // a URL token instead of an assertion. The token is a file (DT_URL_TOKEN_FILE, /home/node/.dt/url-token,
 // root:dtproxy 0640) that the root entrypoint writes and `dt-url-token rotate` replaces; the proxy re-reads
 // it whenever its mtime changes, so a rotation takes effect without a restart.
@@ -40,7 +40,7 @@ const OPEN_PATHS = new Set(['/healthz']);
 
 const HEALTH_TIMEOUT_MS = 2000;
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
-const LOCAL_REFUSAL = 'Open this machine with `dt open container <name>`.\n';
+const LOCAL_REFUSAL = 'Open this machine with `dt-host open container <name>`.\n';
 
 export function loadPublicKey(x) {
   if (!x) throw new Error('DT_GATEWAY_PUBLIC_KEY is required');

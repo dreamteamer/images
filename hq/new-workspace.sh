@@ -42,7 +42,7 @@ dest="$ROOT/$name"
 fstype=$(findmnt -n -o FSTYPE --target "$ROOT" 2>/dev/null | head -1) || fstype=""
 [ -n "$fstype" ] || die "cannot tell what filesystem $ROOT is on (findmnt) — refusing, since a workspace there may not survive the container"
 case "$fstype" in
-  overlay|tmpfs|ramfs) die "$ROOT is not a real mount (it is $fstype: gone with the container) — mount a volume at $ROOT first, e.g. dt start container <name> --mount <volume>:$ROOT" ;;
+  overlay|tmpfs|ramfs) die "$ROOT is not a real mount (it is $fstype: gone with the container) — mount a volume at $ROOT first, e.g. dt-host start container <name> --mount <volume>:$ROOT" ;;
 esac
 [ ! -e "$dest" ] && [ ! -L "$dest" ] || die "$dest already exists"
 
