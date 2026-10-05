@@ -51,12 +51,12 @@ describe('nothing personal, nothing secret — in any template', () => {
 });
 
 describe('one version of everything', () => {
-	test('hq pins engine, bundle, Claude Code and code-server through exact ARGs, never @latest', () => {
+	test('hq pins engine, standalone modules, Claude Code and code-server through exact ARGs, never @latest', () => {
 		const d = read('hq', 'Dockerfile');
-		for (const arg of ['DT_VERSION', 'EXT_VERSION', 'CLAUDE_VERSION', 'CODE_SERVER_VERSION']) assert.match(d, new RegExp(`^ARG ${arg}=\\d+\\.\\d+\\.\\d+$`, 'm'), arg);
+		for (const arg of ['DT_VERSION', 'MODULE_VERSION', 'MEETINGS_VERSION', 'CLAUDE_VERSION', 'CODE_SERVER_VERSION']) assert.match(d, new RegExp(`^ARG ${arg}=\\d+\\.\\d+\\.\\d+$`, 'm'), arg);
 		assert.doesNotMatch(d, /npm install[^\n]*@latest/);
 		assert.match(d, /npm install -g[^\n]*dreamteamer@\$\{DT_VERSION\}/);
-		assert.match(d, /npm install[^\n]*dreamteamer@\$\{DT_VERSION\}[^\n]*@dreamteamer\/extensions@\$\{EXT_VERSION\}/, 'the template must pin the same engine as the global install');
+		assert.match(d, /npm install[^\n]*dreamteamer@\$\{DT_VERSION\}[^\n]*@dreamteamer\/users@\$\{MODULE_VERSION\}/, 'the template must pin the same engine as the global install');
 	});
 	test('hq-agents is built FROM the hq digest of the same run and pins codex and gemini', () => {
 		const d = read('hq-agents', 'Dockerfile');
@@ -81,9 +81,10 @@ describe('what makes an image a template', () => {
 		assert.equal(label(d, 'template'), 'hq');
 		assert.equal(label(d, 'ports'), '8080');
 		assert.equal(label(d, 'engine'), '${DT_VERSION}');
-		const disabled = JSON.parse(d.match(/p\.dreamteamer\.disable=(\[[^\]]*\])/)[1].replace(/'/g, '"'));
-		const bundle = ['assets', 'contacts', 'meetings', 'notebooks', 'perspective', 'projects', 'recordings', 'rnd', 'search', 'users'];
-		assert.deepEqual(label(d, 'modules').split(',').sort(), bundle.filter((m) => !disabled.includes(m)).sort());
+		const installed = [...d.matchAll(/@dreamteamer\/([a-z-]+)@\$\{/g)].map(m => m[1]);
+		assert.deepEqual(label(d, 'modules').split(',').sort(), installed.sort());
+		assert.ok(installed.includes('companies'), 'contacts and meetings require companies explicitly');
+		assert.doesNotMatch(d, /@dreamteamer\/extensions/);
 	});
 	test('hq-agents relabels the template and names its agents', () => {
 		const d = read('hq-agents', 'Dockerfile');

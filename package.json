@@ -1,8 +1,8 @@
 {
 	"name": "@dreamteamer/images",
-	"version": "0.6.1",
+	"version": "0.7.0",
 	"private": true,
-	"description": "The template images `dt-host start container <name> --template <t>` runs — public, built by CI on a v* tag, pushed to ghcr.io/dreamteamer.",
+	"description": "The template images `dt-host start container <name> --template <t>` runs \u2014 public, built by CI on a v* tag, pushed to ghcr.io/dreamteamer.",
 	"license": "Apache-2.0",
 	"type": "module",
 	"scripts": {

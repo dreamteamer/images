@@ -22,27 +22,28 @@ COPY launcher/ ./
 RUN npx --yes @vscode/vsce@3.6.0 package --allow-missing-repository --skip-license --out /dt-machine.vsix
 
 FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
-ARG DT_VERSION=0.28.0
-ARG EXT_VERSION=0.11.0
+ARG DT_VERSION=0.33.0
+ARG MODULE_VERSION=0.1.0
+ARG MEETINGS_VERSION=0.1.1
 ARG CLAUDE_VERSION=2.1.281
 ARG CODE_SERVER_VERSION=4.138.0
 # The two editor extensions, pinned by version and by sha256 (the .vsix files Open VSX serves, checked like the
 # code-server .deb). The Claude Code extension follows the CLI's version and ships per platform;
 # devcontainer.metadata below is built from these same ARGs, so it cannot name another version.
 ARG CLAUDE_VSCODE_VERSION=2.1.281
-ARG DT_VSCODE_VERSION=0.18.2
+ARG DT_VSCODE_VERSION=0.23.2
 # sha256 of the Open VSX .vsix files for those versions: Anthropic.claude-code-<v>@linux-x64 / @linux-arm64, and
 # the universal dreamteamer.dreamteamer-vscode-<v> (downloaded and hashed 2026-09-28; they match Open VSX's .sha256)
 ARG CLAUDE_VSCODE_SHA256_AMD64=a57ccb27fd60df7254a2b00331fd04cef23b0d8da46c06529e4b6d3d8e5e90eb
 ARG CLAUDE_VSCODE_SHA256_ARM64=08428d46262cf06ae4a399d51926a70208f95a62c2ee19cc042f4e5c496b9a84
-ARG DT_VSCODE_SHA256=6fa726ca31c9064fdec4e67af351d412935191000277fc51ba7cbfda8b24b8c8
+ARG DT_VSCODE_SHA256=488de2181ccea3a150618d6f7e5edc3d36290ac5c23126c14c624ccc208dbad5
 # sha256 of code-server_${CODE_SERVER_VERSION}_<arch>.deb, from the v4.138.0 release's asset digests (read 2026-09-25)
 ARG CODE_SERVER_SHA256_AMD64=044eddb4871c9ab7e3a26e23bb472c8fbfedb2723fa2db7c964d903b491ff643
 ARG CODE_SERVER_SHA256_ARM64=a0f404035146ecbd596cc204300ea48f1e2ad6b7ed4c677291e82487a71dec40
 ARG TARGETARCH
 LABEL dreamteamer.template="hq" \
       dreamteamer.ports="8080" \
-      dreamteamer.modules="users,contacts,meetings,projects,assets" \
+      dreamteamer.modules="users,companies,contacts,meetings,projects,assets" \
       dreamteamer.engine="${DT_VERSION}" \
       org.opencontainers.image.title="dreamteamer hq" \
       org.opencontainers.image.description="dreamteamer hq workspace: code-server + Claude Code over users, contacts, meetings, projects" \
@@ -108,13 +109,13 @@ RUN mkdir -p /opt/dt-image && printf '%s\n' url-token > /opt/dt-image/features &
 RUN install -d -m 0755 /etc/claude-code
 RUN mkdir -p /opt/dt-template /workspaces /files && chown -R node:node /opt/dt-template /workspaces /files
 USER node
-# The workspace template, built ONCE here: init, the hq bundle trimmed to its modules, compile.
+# The workspace template, built ONCE here: init, explicit standalone module dependencies, compile.
 # The entrypoint copies it into the (empty) workspace volume on first start — or clones DT_REPO instead.
 WORKDIR /opt/dt-template
 RUN git init -q && git config user.name dreamteamer && git config user.email dreamteamer@localhost \
  && dreamteamer init --name hq --harnesses claude-code \
- && npm install --no-audit --no-fund dreamteamer@${DT_VERSION} @dreamteamer/extensions@${EXT_VERSION} \
- && node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.dreamteamer.disable=['notebooks','perspective','recordings','rnd','search'];fs.writeFileSync('package.json',JSON.stringify(p,null,'\t')+'\n')" \
+ && npm install --no-audit --no-fund dreamteamer@${DT_VERSION} @dreamteamer/users@${MODULE_VERSION} @dreamteamer/companies@${MODULE_VERSION} @dreamteamer/contacts@${MODULE_VERSION} @dreamteamer/assets@${MODULE_VERSION} @dreamteamer/projects@${MODULE_VERSION} @dreamteamer/meetings@${MEETINGS_VERSION} \
+ && node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.dreamteamer.disable=[];fs.writeFileSync('package.json',JSON.stringify(p,null,'\t')+'\n')" \
  && mkdir -p .vscode && printf '{\n\t"recommendations": ["dreamteamer.dreamteamer-vscode", "anthropic.claude-code", "ms-vscode-remote.remote-containers"]\n}\n' > .vscode/extensions.json \
  && npx dreamteamer compile && npx dreamteamer check \
  && git add -A && git commit -qm "dreamteamer: hq template" \

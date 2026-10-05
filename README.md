@@ -54,11 +54,26 @@ gitignored by `dreamteamer init`.
 
 ## versions
 
-One tag, one version of everything: the engine (`DT_VERSION`), the module bundle (`EXT_VERSION`),
+One tag, one version of everything: the engine (`DT_VERSION`), the standalone modules (`MODULE_VERSION`, `MEETINGS_VERSION`),
 Claude Code, code-server and, for `hq-agents`, Codex and Gemini are pinned as `ARG`s in each
 Dockerfile. `hq-agents` is built `FROM ghcr.io/dreamteamer/hq:<the same tag>`.
 
 Apache-2.0.
+
+## Engine 0.33 compatibility
+
+The candidate image uses dreamteamer 0.33.0 and editor extension 0.23.2. The HQ template
+installs users, companies, contacts, assets, projects and meetings as direct standalone
+module dependencies. Companies must be explicit because the engine discovers the workspace's
+direct dependencies, not a transitive bundle. Existing cloned workspaces keep their own
+package manifest and engine version; replacing the image does not migrate their descriptors.
+The new editor requires engine 0.33 or later. Older workspaces need a reviewed package and
+descriptor migration before adopting this editor; do not rewrite their records automatically.
+
+Local verification: all 174 source tests and the hosted smoke test passed. The candidate
+compiled and checked an existing workspace with 100 collections and 1,096 records without
+violations. Local authenticated startup and restart persistence were verified. All 38 built-container tests passed, including persisted-home replacement and workspace
+creation. The signed release workflow remains the hosted rollout gate.
 
 ## Local mode (the default)
 
