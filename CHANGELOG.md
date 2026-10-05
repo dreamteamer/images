@@ -1,6 +1,14 @@
 # Changelog
 
-## unreleased — the host verbs are `dt-host`
+## 0.7.1 — 2026-10-05 — standalone modules
+
+- Upgrade the published engine to 0.33.0 and the verified editor extension to 0.23.2.
+- Replace the extensions bundle with explicit users, companies, contacts, assets, projects and meetings dependencies.
+- Existing workspaces keep their own package versions; descriptor migration is explicit.
+- Local verification: 174 source tests, 38 container tests, hosted smoke and Dockerfile lint passed.
+- Release 0.7.0 stopped before publishing because its changelog entry was missing; this release corrects the metadata.
+
+### Host command extraction
 
 - **Every container verb is spelled `dt-host`.** Engine 0.31.0 moved `setup` and the `container`/`image`
   verbs out of `dt` into the standalone `@dreamteamer/host` binary (`npm i -g @dreamteamer/host`), with
@@ -9,8 +17,6 @@
   `dt-host start|open|stop|rm container`, `dt-host list images` and `dt-host setup`.
 - **The local-mode 401 now reads ``Open this machine with `dt-host open container <name>`.``** The tests
   pin the new sentence.
-- The engine pins in the Dockerfiles are unchanged: an image pins a published engine release, and
-  0.31.0 is not published yet.
 
 ## 0.6.1 — 2026-09-30 — attested
 
