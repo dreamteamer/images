@@ -151,6 +151,15 @@ describe('the local proxy', () => {
 		assert.match(r.body, /dt-host open container <name>/);
 		assert.equal(seen.length, n);
 	});
+	test('editor icon URLs with an empty tkn use the authenticated session, never bypass it', async () => {
+		const url = '/stable-test/vscode-remote-resource?path=%2Fextensions%2Ficon.svg&tkn=';
+		assert.equal((await request(p.port, url)).status, 401);
+		assert.equal((await request(p.port, url, cookie(p.port, TOKEN_B))).status, 401);
+		const valid = await request(p.port, url, cookie(p.port, TOKEN_A));
+		assert.equal(valid.status, 200);
+		assert.equal(valid.headers['set-cookie'], undefined);
+		assert.equal((await request(p.port, '/?tkn=' + TOKEN_B, cookie(p.port, TOKEN_A))).status, 401);
+	});
 	test('a wrong ?tkn= → 401 and no cookie', async () => {
 		const r = await request(p.port, `/?tkn=${TOKEN_B}`);
 		assert.equal(r.status, 401);

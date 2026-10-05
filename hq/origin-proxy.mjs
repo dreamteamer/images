@@ -272,7 +272,9 @@ export function localDecision(req, { readToken, auth = true, upgrade = false }) 
   const q = raw.indexOf('?');
   const params = new URLSearchParams(q < 0 ? '' : raw.slice(q + 1));
   const name = cookieName(req.headers.host);
-  if (params.has('tkn')) {
+  // code-server appends an empty tkn to extension resources when its own auth is off.
+  // An empty value is not a login attempt: the normal session cookie is still required.
+  if (params.get('tkn')) {
     const token = auth ? readToken() : null;
     if (auth && !tokenMatches(token, params.get('tkn'))) return { status: 401, body: LOCAL_REFUSAL };
     params.delete('tkn');

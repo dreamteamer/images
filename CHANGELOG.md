@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2 — 2026-10-05 — local editor icons
+
+- Empty code-server resource tokens now use the authenticated local session cookie.
+- Missing or invalid cookies still fail closed; a nonempty invalid login token is still rejected.
+- Regression coverage includes authenticated icon resources and unauthenticated rejection.
+
 ## 0.7.1 — 2026-10-05 — standalone modules
 
 - Upgrade the published engine to 0.33.0 and the verified editor extension to 0.23.2.
